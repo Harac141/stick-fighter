@@ -740,11 +740,15 @@ class Fighter {
       }
     } else if (this.state === 'jump' || this.state === 'fall') {
       // arms follow the SAME airborne parameter as the legs (rise: guard up;
-      // fall: arms lift/back to brace), no cut at the apex.
+      // fall: arms lift/back to brace), no cut at the apex. Spread into a V
+      // so neither hand crowds the head: the old rear hand sat at ~(2,-28)
+      // rel hip, i.e. right under the chin (head center (3,-48) r12), reading
+      // as the arm folded across the throat. Now front hand drives up+front,
+      // rear hand trails up+BACK with clear negative x, both outside the head.
       const t = Math.max(0, Math.min(1, (typeof this.airT === 'number') ? this.airT : 0.5));
       const lerp = (a, b) => a + (b - a) * t;
-      handF = P(f * lerp(14, 12), feetY - lerp(66, 74));
-      handB = P(f * lerp(2, -10), feetY - lerp(68, 72));
+      handF = P(f * lerp(17, 19), feetY - lerp(62, 70));
+      handB = P(f * lerp(-11, -18), feetY - lerp(60, 66));
     } else if (this.state === 'hurt') {
       handF = P(f * 6, feetY - 70); handB = P(-f * 4, feetY - 68);
     } else if (gaiting) {
