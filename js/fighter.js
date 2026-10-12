@@ -65,9 +65,9 @@ const CFG = {
     bounceMaxVy: 520,     // rebound speed ceiling (cap impact then restitution)
     airK: 26, airC: 3.5,        // limb pendulum while airborne (underdamped=whips)
     torsoK: 60, torsoC: 12,     // torso pendulum while airborne
+    sprawlFrames: 4,      // frames for the lie-down pose blend (user: "a couple frames")
     airDrag: 0.12,        // per-second corpse air drag (near-none: momentum!)
     groundFriction: 8,    // per-second slide decay once on the floor (stop fast)
-    impactMin: 120,       // fall speed before the landing snap widens the sprawl
     flailMaxFrames: 240,        // safety: force-freeze anything that never settles
     restFrames: 90,             // frozen "still image" hold before fading out
     fadeFrames: 45,
@@ -579,6 +579,8 @@ class Fighter {
     const lie = () => (Math.random() < 0.5 ? -1 : 1) * (1.15 + Math.random() * 0.4);
     this.ragdoll = {
       t: 0, frames: 0, alpha: 1, settled: false, freeze: null, restLeft: 0, bounces, gnd: false,
+      hipY: this.sprite.y + 10,   // drawn pivot; ragStep owns it (flight rides sprite, blend sinks it)
+      sprawl: null, sprawlDone: false,
       torso: { th: this.facing * (0.30 + Math.random() * 0.45), thv: fling, th0: lieDir * (1.3 + Math.random() * 0.2) },
       legA:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), restF: lie() },
       legB:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), restF: lie() },
@@ -629,41 +631,65 @@ class Fighter {
     const onGnd = this.sprite.y >= centerY - 0.5;
     if (onGnd) {
       this.sprite.y = centerY;
-      // HARD CONTACT SNAP (user: "don't worry about smooth"): on the contact
-      // frame every joint jumps INSTANTLY to a LYING pose — no spring easing.
-      // Lying = everything nearly HORIZONTAL (angle from straight-down ~±1.4):
-      // torso flat, legs extended along the floor pointing AWAY from the head
-      // (head ends up on the knock side), arms flopped sideways. The old
-      // down-outward sprawl (±1.15 from vertical) + floor clamp read as the
-      // corpse crawling on hands and knees (user).
-      if (v.y > 40) {
+      // LIE-DOWN: first ground contact starts a SHORT pose blend (user:
+      // "over a couple frames", not instant, not smoothed-with-springs).
+      // 4-frame angle lerp into an explicit lying pose (torso flat, head on
+      // the knock side, legs extended trailing, arms flopped). No springs
+      // involved — scripted blend of angles only.
+      if (!rd.sprawl && !rd.sprawlDone) {
         const dirX = Math.sign(v.x || this.facing) || 1;
-        const whip = Math.min(v.y, 600) * 0.0022 * dirX;        // rad, impact-scaled
+        const whip = Math.min(Math.max(v.y, 0), 600) * 0.0022 * dirX;
         const f = this.facing;
-        rd.torso.th = dirX * (1.44 + Math.random() * 0.10) * f + whip * 0.2;
-        rd.torso.thv = 0;      // grounded springs are off: kill residual spin
-                               // or settle-energy never decays (240f timeout)
-        rd.legA.th = -dirX * (1.22 + Math.random() * 0.25) * f;
-        rd.legB.th = -dirX * (1.05 + Math.random() * 0.35) * f;   // one leg less straight
-        rd.armA.th = (Math.random() < 0.5 ? 1 : -1) * (0.95 + Math.random() * 0.5) * f;
-        rd.armB.th = (Math.random() < 0.5 ? 1 : -1) * (0.95 + Math.random() * 0.5) * f;
+        rd.sprawl = {
+          t: 0, frames: K.sprawlFrames,
+          from: { torso: rd.torso.th, legA: rd.legA.th, legB: rd.legB.th, armA: rd.armA.th, armB: rd.armB.th },
+          to: {
+            torso: dirX * (1.44 + Math.random() * 0.10) * f + whip * 0.2,
+            legA: -dirX * (1.22 + Math.random() * 0.25) * f,
+            legB: -dirX * (1.05 + Math.random() * 0.35) * f,
+            armA: (Math.random() < 0.5 ? 1 : -1) * (0.95 + Math.random() * 0.5) * f,
+            armB: (Math.random() < 0.5 ? 1 : -1) * (0.95 + Math.random() * 0.5) * f,
+          },
+          hipFrom: rd.hipY, hipTo: this.scene.groundY - 14,
+        };
+        rd.torso.thv = 0;
         for (const j of [rd.legA, rd.legB, rd.armA, rd.armB]) j.thv = 0;
       }
       if (v.y > K.bounceMinVy && rd.bounces > 0) {
         rd.bounces--;
         v.y = -Math.min(v.y, K.bounceMaxVy) * 0.45;   // hard deaths bounce
+        rd.sprawl = null;                             // re-fires on next landing
       } else if (v.y > 0) {
         v.y = 0;
       }
       v.x *= (1 - K.groundFriction * dt);             // slide, then stop fast
+    } else if (!rd.sprawl) {
+      // Airborne: the drawn hip rides the sprite (the OLD tilt-driven sink
+      // pinned flying corpses to the floor line — that's why uppercut KOs
+      // looked like they barely left the ground; they fly ~100px now).
+      rd.hipY = this.sprite.y + 10;
     }
 
-    // Joint springs: ONLY live while airborne — flail on the way down (limbs
-    // whip underdamped), then the ground snap above takes over and freezes
-    // them (thv=0 + grounded flag = joints stop dead, zero smoothing).
+    // Advance the lie-down blend (grounded frames only).
+    if (rd.sprawl && onGnd) {
+      const s = rd.sprawl;
+      s.t++;
+      const u = Math.min(1, s.t / s.frames);
+      const lerp = (a, b) => a + (b - a) * u;
+      rd.torso.th = lerp(s.from.torso, s.to.torso);
+      rd.legA.th = lerp(s.from.legA, s.to.legA);
+      rd.legB.th = lerp(s.from.legB, s.to.legB);
+      rd.armA.th = lerp(s.from.armA, s.to.armA);
+      rd.armB.th = lerp(s.from.armB, s.to.armB);
+      rd.hipY = lerp(s.hipFrom, s.hipTo);
+      if (u >= 1) { rd.sprawl = null; rd.sprawlDone = true; }
+    }
+
+    // Joint springs: airborne flail ONLY (limbs whip underdamped on the way
+    // down); on the ground the lie-down blend owns the angles.
     const grounded = onGnd && v.y === 0;
     rd.gnd = grounded;
-    if (!grounded) {
+    if (!grounded && !rd.sprawl) {
       const set = (j, rest) => {
         j.thv += (-K.airK * (j.th - rest) - K.airC * j.thv) * dt;
         j.th += j.thv * dt;
@@ -672,13 +698,9 @@ class Fighter {
       set(rd.legA, 0); set(rd.legB, 0); set(rd.armA, 0); set(rd.armB, 0);
     }
 
-    // Settle -> FREEZE (the user's "still image": zero compute, replay the
-    // snapshot taken here) -> fade -> despawn (fade clock lives in the
-    // settled early-return above).
-    const energy = Math.abs(rd.torso.thv) + Math.abs(rd.legA.thv) + Math.abs(rd.legB.thv)
-                 + Math.abs(rd.armA.thv) + Math.abs(rd.armB.thv)
-                 + Math.abs(v.x) / 100 + (onGnd ? 0 : Math.abs(v.y) / 400);
-    if ((grounded && energy < 0.35) || rd.frames > K.flailMaxFrames) this.forceFreeze();
+    // Settle once the blend finished and the corpse stopped sliding ->
+    // FREEZE (still image) -> fade -> despawn (fade clock in the early-return).
+    if ((grounded && rd.sprawlDone && Math.abs(v.x) < 30) || rd.frames > K.flailMaxFrames) this.forceFreeze();
   }
 
   // Joint-angle FK: skeleton points straight FROM the spring state (the
@@ -686,13 +708,12 @@ class Fighter {
   // Rendered every flail frame and captured ONCE at freeze time.
   _ragPoints() {
     const rd = this.ragdoll, f = this.facing;
-    // Hip sinks toward the floor as the torso topples (a lying body rests ON
-    // the ground; pivot-at-center would float a horizontal corpse ~36px up).
-    // Tilt-driven, not grounded-flagged: smooth through the landing frame.
+    // Hip height is OWNED by ragStep (rd.hipY): rides the sprite in flight
+    // (so uppercut KOs visibly FLY — the old tilt-driven sink pinned the
+    // drawn skeleton to the floor line while the body was airborne) and
+    // lerps to floor level during the lie-down blend.
+    const hip = { x: this.sprite.x, y: (rd.hipY != null ? rd.hipY : this.sprite.y + 10) };
     const T = rd.torso.th;
-    const sink = Math.min(1, Math.abs(T) / 1.25);
-    const hip = { x: this.sprite.x,
-      y: (this.sprite.y + 10) + (this.scene.groundY - 14 - (this.sprite.y + 10)) * sink };
     // Torso up-vector rotated by topple angle T (T=0 upright, ±90deg flat).
     const ux = Math.sin(T) * f, uy = -Math.cos(T);
     const neck = { x: hip.x + ux * 26, y: hip.y + uy * 26 };
