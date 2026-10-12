@@ -205,7 +205,8 @@ class Fighter {
       const dir = input.left ? -1 : (input.right ? 1 : this.facing);
       this.facing = dir;
       this.state = 'dash';
-      this._snapNext = true;   // instant read on trigger (blended OUT by design)
+      // No snap: the entry pose eases in over a frame or two (fast rate in
+      // blendPose) — sells the push-off without the leap losing its punch.
       this.dashTimer = CFG.dash.burstFrames;  // burst phase, then hold-to-sprint
       // Double-tap dashes sustain on the direction key; Shift dashes on Shift.
       this.dashSustainKey = (input.dashSrc === 'tap') ? dir : null;
@@ -446,11 +447,14 @@ class Fighter {
       this._renderFacing = this.facing;
     }
 
+    // Dash burst uses a faster rate: ~60% of the leap pose by frame 1, ~85%
+    // by frame 2. Punchy, but the intermediate frames read as pushing off.
+    const rate = (this.state === 'dash' && this.dashTimer > 0) ? 0.6 : BLEND;
     const SMOOTH = ['hip', 'neck', 'head', 'footA', 'footB', 'handA', 'handB'];
     const blended = {};
     for (const k of SMOOTH) blended[k] = {
-      x: cur[k].x + (target[k].x - cur[k].x) * BLEND,
-      y: cur[k].y + (target[k].y - cur[k].y) * BLEND,
+      x: cur[k].x + (target[k].x - cur[k].x) * rate,
+      y: cur[k].y + (target[k].y - cur[k].y) * rate,
     };
 
     // Keep hips above feet sanity: never let the blended hip sink below feet.
@@ -469,8 +473,8 @@ class Fighter {
       // side picking was tried twice and flipped (stale dash arms; nearest-
       // candidate across the lagging blended line at the bottom of swing).
       const cr = (a, b, q) => (b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x);
-      const sideA = Math.sign(cr(target.neck, target.handA, target.elbowA)) || 1;
-      const sideB = Math.sign(cr(target.neck, target.handB, target.elbowB)) || 1;
+      const sideA = target.elbowSideA ?? (Math.sign(cr(target.neck, target.handA, target.elbowA)) || 1);
+      const sideB = target.elbowSideB ?? (Math.sign(cr(target.neck, target.handB, target.elbowB)) || 1);
       blended.elbowA = this._reSolve(blended.neck, blended.handA, target.elbowA, 'fk', sideA);
       blended.elbowB = this._reSolve(blended.neck, blended.handB, target.elbowB, 'fk', sideB);
     } else {
@@ -659,6 +663,7 @@ class Fighter {
     // ============ ARM LAYER ============
     let elbowF = null, elbowB = null, handF = null, handB = null;
     let uArmF = UARM, fArmF = FARM;
+    let burstSides = null;
 
     if (this.state === 'attack') {
       const atk = CFG.attacks[this.currentAttack] || CFG.attacks.jab;
@@ -707,13 +712,25 @@ class Fighter {
       handF = A.hand; elbowF = A.elbow;
       handB = B.hand; elbowB = B.elbow;
       if (this.state === 'dash' && this.dashTimer > 0) {
-        // leap arms (up-and-back, long-jump takeoff) fading into the pump
+        // LEAP ARMS held at a fixed IK-consistent look for the whole burst.
+        // Elbow POINTS must not be lerped (hand and elbow crossing the
+        // shoulder->hand line at different rates flipped the elbow side
+        // mid-pose); hands still ease toward the stride as the burst fades.
         const ease = Math.pow(this.dashTimer / CFG.dash.burstFrames, 0.8);
         const lp = (a, b) => ({ x: a.x + (b.x - a.x) * ease, y: a.y + (b.y - a.y) * ease });
-        handF = lp(handF, { x: hipX + f * 22, y: feetY - 70 });
-        handB = lp(handB, { x: hipX - f * 18, y: feetY - 50 });
-        elbowF = lp(elbowF, { x: neck.x + f * 10, y: neck.y - 8 });
-        elbowB = lp(elbowB, { x: neck.x - f * 12, y: neck.y + 2 });
+        const leapHF = { x: hipX + f * 22, y: feetY - 70 };
+        const leapHB = { x: hipX - f * 18, y: feetY - 50 };
+        const leapEF = { x: neck.x + f * 10, y: neck.y - 8 };   // elbow raised (takeoff)
+        const leapEB = { x: neck.x - f * 12, y: neck.y + 2 };   // trailing arm low
+        handF = lp(handF, leapHF);
+        handB = lp(handB, leapHB);
+        elbowF = leapEF;
+        elbowB = leapEB;
+        const cr = (a, b, q) => (b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x);
+        burstSides = {
+          F: Math.sign(cr(neck, leapHF, leapEF)) || 1,
+          B: Math.sign(cr(neck, leapHB, leapEB)) || 1,
+        };
       }
     } else {                                        // idle breathing guard
       const bob = Math.sin(this.animTime * 3) * 1.5;
@@ -730,6 +747,9 @@ class Fighter {
       kneeB: ik2(hipX, hipY, footF.x, footF.y, THIGH, SHIN, 'knee', f), footB: footF,
       elbowA: elbowB, handA: handB, elbowB: elbowF, handB: handF,
       fkElbows,
+      // fixed elbow side authority during the burst (slot A = back arm)
+      elbowSideA: burstSides ? burstSides.B : null,
+      elbowSideB: burstSides ? burstSides.F : null,
     };
   }
 
