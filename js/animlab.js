@@ -5,24 +5,35 @@
 // The harness calls fighter.computePose directly, so it tests EXACTLY what
 // the game renders.
 
+// Row list hoisted to module scope so canvas height derives from row count.
+// `total` is ignored — frame count comes from CFG (startup+active+recovery).
+const LAB_ROWS = [
+  { state: 'idle',  phase: () => 0.0 },
+  { state: 'run',   phase: (i) => i / 8 },          // 8 phases of cycle
+  { state: 'dash',  phase: () => 0.0, burst: true }, // burst = leap pose
+  { state: 'dash',  phase: (i) => i / 8 },           // sprint = run cycle
+  { state: 'jump',  phase: () => 0.0 },
+  { state: 'fall',  phase: () => 0.0 },
+  { state: 'attack', name: 'jab',   phase: (i) => i / 8 },
+  { state: 'attack', name: 'heavy', phase: (i) => i / 8 },
+  { state: 'attack', name: 'uppercut',   phase: (i) => i / 8 },
+  { state: 'attack', name: 'cartwheel',  phase: (i) => i / 8 },
+  { state: 'attack', name: 'sweep',      phase: (i) => i / 8 },
+  { state: 'attack', name: 'hammerfist', phase: (i) => i / 8 },
+  { state: 'attack', name: 'airjab',     phase: (i) => i / 8, air: true },
+  { state: 'attack', name: 'stomp',      phase: (i) => i / 8, air: true },
+  { state: 'attack', name: 'dashatk',    phase: (i) => i / 8 },
+  { state: 'hurt',  phase: () => 0.0 },
+  { state: 'attack', name: 'jab', phase: (i) => i / 8, whileMoving: true },
+  { state: 'attack', name: 'heavy', phase: (i) => i / 8, whileMoving: true },
+];
+
 class LabScene extends Phaser.Scene {
   constructor() { super('lab'); }
 
   create() {
     const COLS = 8, CELL_W = 120, CELL_H = 130;
-    const rows = [
-      { state: 'idle',  phase: () => 0.0 },
-      { state: 'run',   phase: (i) => i / COLS },          // 8 phases of cycle
-      { state: 'dash',  phase: () => 0.0, burst: true },   // burst = leap pose
-      { state: 'dash',  phase: (i) => i / COLS },          // sprint = run cycle
-      { state: 'jump',  phase: () => 0.0 },
-      { state: 'fall',  phase: () => 0.0 },
-      { state: 'attack', name: 'jab',   phase: (i) => i / COLS, total: 16 }, // jab total frames
-      { state: 'attack', name: 'heavy', phase: (i) => i / COLS, total: 34 },
-      { state: 'hurt',  phase: () => 0.0 },
-      { state: 'attack', name: 'jab', phase: (i) => i / COLS, total: 10, whileMoving: true },
-      { state: 'attack', name: 'heavy', phase: (i) => i / COLS, total: 34, whileMoving: true },
-    ];
+    const rows = LAB_ROWS;
 
     let y = 40;
     for (const row of rows) {
@@ -46,6 +57,7 @@ class LabScene extends Phaser.Scene {
           const atk = Fighter.CFG.attacks[row.name];
           const total = atk.startup + atk.active + atk.recovery;
           f.attackFrame = Math.max(1, Math.round(row.phase(i) * total));
+          if (row.air) { f.airborne = true; f.body.velocity.y = 120; }  // air attacks: scripted legs
           if (row.whileMoving) {
             f.cyclePhase = (i / COLS + 0.25) % 1;  // offset so legs differ per frame
             f.body.velocity.x = 250;               // fake run speed -> gaiting
@@ -81,7 +93,7 @@ window.__LAB = new Phaser.Game({
   type: Phaser.CANVAS,
   parent: 'lab',
   width: 8 * 120 + 40,
-  height: 11 * 144 + 80,
+  height: LAB_ROWS.length * 144 + 80,
   backgroundColor: '#08080c',
   physics: { default: 'arcade', arcade: { debug: false } },
   scene: LabScene,

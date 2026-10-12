@@ -71,6 +71,60 @@ const CFG = {
       damage: 14,
       box:   { x: 30, y: 4, w: 58, h: 26 },
       knock: { x: 520, y: -360, hitstun: 26 },
+      cooldown: 14,
+    },
+    // ---- Contextual variants (two buttons + context, Smash/Kirby style) ----
+    // pose tags drive computePose; air:true = airborne legs; hitFrames = multi-hit;
+    // knockScale = knockback grows with attacker speed; meteor = downward spike.
+    uppercut: {                                 // J while rising
+      startup: 3, active: 4, recovery: 9,
+      damage: 7, pose: 'upper',
+      box:   { x: 16, y: -36, w: 40, h: 44 },
+      knock: { x: 120, y: -600, hitstun: 22 },  // launcher: pops straight up
+      cooldown: 8,
+    },
+    cartwheel: {                                // K while rising (Kirby up-smash)
+      startup: 4, active: 10, recovery: 12,
+      damage: 5, pose: 'cartwheel',
+      hitFrames: [6, 10],                       // two hits: tick, then pop
+      box:   { x: 10, y: -34, w: 54, h: 56 },
+      knock: { x: 240, y: -560, hitstun: 18 },
+      cooldown: 12,
+    },
+    sweep: {                                    // S+J grounded
+      startup: 4, active: 4, recovery: 11,
+      damage: 6, pose: 'sweep',
+      box:   { x: 26, y: 26, w: 54, h: 16 },    // low hook at the ankles
+      knock: { x: 300, y: -40, hitstun: 30 },   // knockdown: scrambles up slowly
+      cooldown: 8,
+    },
+    hammerfist: {                               // S+K grounded
+      startup: 10, active: 5, recovery: 17,
+      damage: 18, pose: 'hammer',
+      box:   { x: 22, y: -12, w: 48, h: 54 },
+      knock: { x: 440, y: -260, hitstun: 28 },  // slow telegraph, enormous payoff
+      cooldown: 14,
+    },
+    airjab: {                                   // J airborne
+      startup: 3, active: 4, recovery: 6,
+      damage: 5, pose: 'airjab', air: true,
+      box:   { x: 24, y: -16, w: 42, h: 26 },
+      knock: { x: 200, y: -120, hitstun: 12 },
+      cooldown: 5,
+    },
+    stomp: {                                    // S+K airborne
+      startup: 4, active: 8, recovery: 5,
+      damage: 10, pose: 'stomp', air: true, meteor: true,
+      box:   { x: 2, y: 26, w: 36, h: 38 },     // spikes straight down
+      knock: { x: 0, y: 540, hitstun: 24 },     // meteor: slams into the floor
+      cooldown: 8,
+    },
+    dashatk: {                                  // J/K during dash
+      startup: 2, active: 5, recovery: 10,
+      damage: 9, pose: 'dash',
+      box:   { x: 30, y: -8, w: 48, h: 30 },    // shoulder check
+      knock: { x: 140, y: -280, hitstun: 22 },
+      knockScale: true,                         // + speed*0.8: 560 dash slams across arena
       cooldown: 10,
     },
   },
@@ -173,8 +227,17 @@ class Fighter {
       this.hitstun--;
       this.state = 'hurt';
       // During hitstun the player cannot act; knockback velocity carries.
+      // Meteor: the spike's landing pops a hurt bounce + extra stun, which
+      // is the juggle-extension window.
+      if (this.meteorPending && this.onGround) {
+        this.meteorPending = false;
+        this.body.setVelocityY(-200);
+        this.hitstun = Math.max(this.hitstun, 16);
+        this._snapNext = true;
+      }
       if (this.hitstun === 0 && this.onGround) {
         this.state = 'idle';
+        this.meteorPending = false;
       }
       this.physicsStep(false);
       return;
@@ -233,8 +296,8 @@ class Fighter {
     // ---- Attack inputs (take priority over movement) ----
     if (this.attackCooldown === 0 && (this.state === 'idle' || this.state === 'run'
         || this.state === 'jump' || this.state === 'fall' || this.state === 'dash')) {
-      if (input.heavy && this.canStartAttack()) { this.startAttack('heavy'); return; }
-      if (input.jab   && this.canStartAttack()) { this.startAttack('jab');   return; }
+      const mv = this.selectAttack(input);
+      if (mv && this.canStartAttack()) { this.startAttack(mv); return; }
     }
 
     // ---- Dash (ground only) ----
@@ -327,6 +390,28 @@ class Fighter {
   // ---- Attacks ----
   canStartAttack() { return !this.currentAttack; }
 
+  // Context picker: two attack buttons x stance = whole moveset (Smash/Kirby
+  // grammar). Keys stay the floor; mouse-aim can later pick variants too.
+  //   grounded J/K          -> jab / heavy
+  //   grounded S+J/K        -> sweep / hammerfist
+  //   rising J/K            -> uppercut / cartwheel  ("up+attack" = jump+attack)
+  //   air J                 -> airjab   (small, keeps float)
+  //   air S+K               -> stomp    (dive-kick spike, meteor on grounded)
+  //   any time during dash  -> dashatk  (shoulder check, speed-scaled slam)
+  selectAttack(input) {
+    const H = !!input.heavy, L = !!input.jab;
+    if (!H && !L) return null;
+    if (this.state === 'dash' && this.dashTimer > 0) return 'dashatk';
+    const rising = this.airborne && this.body.velocity.y < -100;
+    if (this.airborne) {
+      if (rising) return H ? 'cartwheel' : 'uppercut';
+      if (H && input.down) return 'stomp';
+      return 'airjab';                            // air light/heavy (air-tagged pose)
+    }
+    if (input.down) return H ? 'hammerfist' : 'sweep';
+    return H ? 'heavy' : 'jab';
+  }
+
   startAttack(name) {
     const atk = CFG.attacks[name];
     this.currentAttack = name;
@@ -339,6 +424,10 @@ class Fighter {
     this.state = 'attack';
     this.attackCooldown = atk.cooldown;
     // Momentum carries: horizontal velocity is NOT touched here.
+    // Stomp sells the spike with an actual downward commitment.
+    if (atk.meteor && this.airborne) {
+      this.body.setVelocityY(Math.max(this.body.velocity.y, 380));
+    }
   }
 
   tickDash(input) {
@@ -379,8 +468,17 @@ class Fighter {
     const activeEnd = atk.startup + atk.active;
 
     // Publish a hitbox only during active frames (and only until it lands).
+    // Multi-hit (hitFrames = [f1, f2]): each frame opens a fresh 2-frame
+    // window with its own hit-landed flag — the cartwheel's tick-then-pop.
     this.hitboxes.length = 0;
-    if (this.attackFrame > activeStart && this.attackFrame <= activeEnd && !this.hitConfirmed) {
+    if (atk.hitFrames) {
+      for (const hf of atk.hitFrames) {
+        if (this.attackFrame === hf) this.hitConfirmed = false;  // new window
+        if (this.attackFrame >= hf && this.attackFrame < hf + 2 && !this.hitConfirmed) {
+          this.hitboxes.push(this.attackWorldBox(atk));
+        }
+      }
+    } else if (this.attackFrame > activeStart && this.attackFrame <= activeEnd && !this.hitConfirmed) {
       this.hitboxes.push(this.attackWorldBox(atk));
     }
     if (this.attackFrame >= activeStart + atk.active + atk.recovery) {
@@ -407,7 +505,13 @@ class Fighter {
       w: atk.box.w,
       h: atk.box.h,
       damage: atk.damage,
-      knock: atk.knock,
+      // knockScale: attacker speed feeds knockback (dash attack at 560
+      // slams mooks clean across the arena — momentum-through-attacks).
+      knock: atk.knockScale
+        ? { x: atk.knock.x + Math.abs(this.body.velocity.x) * 0.8,
+            y: atk.knock.y, hitstun: atk.knock.hitstun }
+        : atk.knock,
+      meteor: !!atk.meteor,
     };
   }
 
@@ -437,6 +541,8 @@ class Fighter {
     this.currentAttack = null;
     this.hitboxes.length = 0;
     this.state = 'hurt';
+    // Meteor spike: slam down, then a bounce + scramble delay on landing.
+    if (hb.meteor) this.meteorPending = true;
   }
 
   // ---- Rendering ----------------------------------------------------------
@@ -612,7 +718,11 @@ class Fighter {
     // sliding punch. Two separate cycles: WALK (normal movement) and SPRINT
     // (dash hold phase / fast attacks). Dash BURST keeps its leap pose.
     const mode = this.gaitMode();
-    const gaiting = mode !== 'none';
+    const atkNow = this.state === 'attack' ? (CFG.attacks[this.currentAttack] || {}) : null;
+    // Attacks in the air or the dash check have SCRIPTED legs — the gait
+    // layer must not take the feet over mid-move.
+    const gaiting = mode !== 'none'
+      && !(atkNow && (atkNow.air || this.airborne || atkNow.pose === 'dash'));
 
     // Per-state torso (and legs when NOT gaiting).
     switch (this.state) {
@@ -638,9 +748,34 @@ class Fighter {
       case 'attack': {
         const atk = CFG.attacks[this.currentAttack] || CFG.attacks.jab;
         const fr = this.attackFrame;
-        if (fr <= atk.startup)      { lean = -0.06; hipY = feetY - 38;
+        const act = fr > atk.startup && fr <= atk.startup + atk.active;
+        if (atk.pose === 'upper') {          // rising fist, body extends up
+          lean = act ? -0.12 : -0.02;
+          footF = P(f * 10, feetY - (act ? 12 : 2)); footB = P(-f * 16, feetY - (act ? 4 : 0));
+        } else if (atk.pose === 'cartwheel') {  // kick over the head, legs scissor
+          lean = act ? 0.5 : -0.05;
+          const k = act ? (fr - atk.startup) / Math.max(1, atk.active) : 0;
+          footF = P(f * (10 + 34 * k), feetY - (act ? 20 + 30 * Math.sin(Math.PI * k) : 2));
+          footB = P(-f * (18 - 30 * (act ? k : 0)), feetY - (act ? 8 + 26 * k : 0));
+        } else if (atk.pose === 'sweep') {      // deep crouch, leg extended low
+          lean = 0.28; hipY = feetY - 30;
+          footF = P(f * (act ? 40 : 16), feetY - (act ? 3 : 0)); footB = P(-f * 12, feetY);
+        } else if (atk.pose === 'hammer') {     // wind up tall, crush down
+          lean = act ? 0.3 : -0.18;
+          hipY = feetY - (act ? 36 : 42);
+          footF = P(f * 16, feetY); footB = P(-f * (act ? 22 : 16), feetY - (act ? 6 : 0));
+        } else if (atk.pose === 'stomp') {      // both feet spike straight down
+          lean = 0.1;
+          footF = P(f * 8, feetY + (act ? 8 : -2)); footB = P(f * -4, feetY + (act ? 4 : -6));
+        } else if (atk.pose === 'dash') {       // shoulder: lunge, trail leg flat
+          lean = 0.34;
+          footF = P(f * 24, feetY - (act ? 6 : 0)); footB = P(-f * 34, feetY - (act ? 12 : 2));
+        } else if (atk.pose === 'airjab') {     // compact, legs tuck slightly
+          lean = 0.14;
+          footF = P(f * 12, feetY - 8); footB = P(-f * 14, feetY - 12);
+        } else if (fr <= atk.startup)      { lean = -0.06; hipY = feetY - 38;
           footF = P(f * 14, feetY); footB = P(-f * 18, feetY); }
-        else if (fr <= atk.startup + atk.active) { lean = 0.12; hipX = x + f * 2;
+        else if (act) { lean = 0.12; hipX = x + f * 2;
           footF = P(f * 18, feetY); footB = P(-f * 20, feetY - 8); }
         else                        { lean = 0.12;
           footF = P(f * 16, feetY); footB = P(-f * 14, feetY); }
@@ -738,9 +873,34 @@ class Fighter {
       const fr = this.attackFrame;
       const reach = f * (atk.box.x + atk.box.w - 12);
       const chestY = feetY - 60 + atk.box.y * 0.5;
-      if (fr <= atk.startup) {                    // anticipation
+      const act = fr > atk.startup && fr <= atk.startup + atk.active;
+      if (atk.pose === 'upper') {                 // fist drives UP past the head
+        if (act) { uArmF += 8; fArmF += 8;
+          handF = P(f * 22, feetY - 92); handB = P(-f * 8, feetY - 62); }
+        else { handF = P(f * 4, feetY - 56); handB = P(-f * 10, feetY - 64); }
+      } else if (atk.pose === 'cartwheel') {      // arms down for the kick axis
+        if (act) { handF = P(f * 16, feetY - 46); handB = P(-f * 18, feetY - 44); }
+        else { handF = P(f * 6, feetY - 58); handB = P(-f * 12, feetY - 58); }
+      } else if (atk.pose === 'sweep') {          // hand sweeps the floor line
+        if (act) { handF = P(f * 34, feetY - 16); handB = P(f * 4, feetY - 58); }
+        else { handF = P(f * 6, feetY - 40); handB = P(-f * 8, feetY - 60); }
+      } else if (atk.pose === 'hammer') {         // wind up OVERHEAD, fist crashes down
+        if (fr <= atk.startup) { uArmF += 6; fArmF += 6;
+          handF = P(-f * 4, feetY - 96); handB = P(-f * 10, feetY - 70); }
+        else if (act) { uArmF += 8; fArmF += 8;
+          handF = P(f * 30, feetY - 34); handB = P(f * 2, feetY - 66); }
+        else { handF = P(f * 20, feetY - 48); handB = P(-f * 4, feetY - 62); }
+      } else if (atk.pose === 'stomp') {          // arms up for balance while spiking
+        handF = P(f * 12, feetY - 84); handB = P(-f * 14, feetY - 80);
+      } else if (atk.pose === 'dash') {           // shoulder check, arms tucked back
+        if (act) { handF = P(f * 26, feetY - 58); handB = P(-f * 16, feetY - 56); }
+        else { handF = P(f * 12, feetY - 60); handB = P(-f * 14, feetY - 58); }
+      } else if (atk.pose === 'airjab') {         // short sharp forward poke
+        if (act) { handF = P(f * 30, feetY - 64); handB = P(-f * 10, feetY - 66); }
+        else { handF = P(f * 10, feetY - 62); handB = P(-f * 12, feetY - 64); }
+      } else if (fr <= atk.startup) {             // anticipation (jab/heavy)
         handF = P(f * 2, feetY - 60); handB = P(-f * 10, feetY - 64);
-      } else if (fr <= atk.startup + atk.active) {// impact + overshoot
+      } else if (act) {                           // impact + overshoot
         const ka = (fr - atk.startup) / Math.max(1, atk.active);
         uArmF += 6; fArmF += 6;                   // animator's stretch
         handF = P(reach * (1 + 0.06 * Math.sin(Math.PI * ka)), chestY);
