@@ -569,13 +569,18 @@ class Fighter {
     // straight down. Angular velocities seeded from the knock direction so
     // the corpse's limbs trail the blow.
     const fling = this.facing * (2 + Math.random() * 3);
+    // Fall/lie targets chosen at death: torso ends flat (~90deg) tipped in
+    // the knock direction; limbs spring to near-horizontal sprawl once
+    // grounded (they dangle at rest 0 while airborne).
+    const lieDir = (Math.sign(v.x || -this.facing) * this.facing) >= 0 ? 1 : -1;
+    const lie = () => (Math.random() < 0.5 ? -1 : 1) * (1.15 + Math.random() * 0.4);
     this.ragdoll = {
-      t: 0, frames: 0, alpha: 1, settled: false, freeze: null, restLeft: 0, bounces,
-      torso: { th: this.facing * (0.30 + Math.random() * 0.45), thv: fling, th0: this.facing * (0.9 + Math.random() * 0.5) },
-      legA:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), rest: rnd(0.7) },
-      legB:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), rest: rnd(0.7) },
-      armA:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9), rest: rnd(1.0) },
-      armB:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9), rest: rnd(1.0) },
+      t: 0, frames: 0, alpha: 1, settled: false, freeze: null, restLeft: 0, bounces, gnd: false,
+      torso: { th: this.facing * (0.30 + Math.random() * 0.45), thv: fling, th0: lieDir * (1.3 + Math.random() * 0.2) },
+      legA:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), restF: lie() },
+      legB:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), restF: lie() },
+      armA:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9), restF: lie() },
+      armB:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9), restF: lie() },
     };
     // Meteor spikes: skip the pop, slam straight down.
     if (hb && hb.meteor) { v.y = Math.max(v.y, 420); this.ragdoll.torso.thv = this.facing * 6; }
@@ -638,16 +643,20 @@ class Fighter {
     // Joint springs: theta'' = -K(theta - rest) - C*theta'. Underdamped in
     // air (limbs whip), stiff once grounded (sprawl fast, then hold).
     const grounded = onGnd && v.y === 0;
+    rd.gnd = grounded;
     const set = (j, rest, kv, cv) => {
       j.thv += (-kv * (j.th - rest) - cv * j.thv) * dt;
       j.th += j.thv * dt;
     };
     const kvK = grounded ? K.groundK : K.airK, cvK = grounded ? K.groundC : K.airC;
-    set(rd.torso, grounded ? 0 : rd.torso.th0, K.torsoK * (grounded ? 1 : 0.35), K.torsoC);
-    set(rd.legA, rd.legA.rest, kvK, cvK);
-    set(rd.legB, rd.legB.rest, kvK, cvK);
-    set(rd.armA, rd.armA.rest, kvK, cvK);
-    set(rd.armB, rd.armB.rest, kvK, cvK);
+    // LIE DOWN (user: corpses sprang back upright on landing — the grounded
+    // torso target was 0 = standing). Torso springs to its fallen angle once
+    // down; limbs sprawl to near-horizontal (restF) instead of hanging (0).
+    set(rd.torso, grounded ? rd.torso.th0 : rd.torso.th0 * 0.55, K.torsoK * (grounded ? 1 : 0.35), K.torsoC);
+    set(rd.legA, grounded ? rd.legA.restF : 0, kvK, cvK);
+    set(rd.legB, grounded ? rd.legB.restF : 0, kvK, cvK);
+    set(rd.armA, grounded ? rd.armA.restF : 0, kvK, cvK);
+    set(rd.armB, grounded ? rd.armB.restF : 0, kvK, cvK);
 
     // Settle -> FREEZE (the user's "still image": zero compute, replay the
     // snapshot taken here) -> fade -> despawn (fade clock lives in the
@@ -663,9 +672,14 @@ class Fighter {
   // Rendered every flail frame and captured ONCE at freeze time.
   _ragPoints() {
     const rd = this.ragdoll, f = this.facing;
-    const hip = { x: this.sprite.x, y: this.sprite.y + 10 };  // pivot low-center
-    // Torso up-vector rotated by topple angle T (T=0 upright, ±90deg flat).
+    // Hip sinks toward the floor as the torso topples (a lying body rests ON
+    // the ground; pivot-at-center would float a horizontal corpse ~36px up).
+    // Tilt-driven, not grounded-flagged: smooth through the landing frame.
     const T = rd.torso.th;
+    const sink = Math.min(1, Math.abs(T) / 1.25);
+    const hip = { x: this.sprite.x,
+      y: (this.sprite.y + 10) + (this.scene.groundY - 14 - (this.sprite.y + 10)) * sink };
+    // Torso up-vector rotated by topple angle T (T=0 upright, ±90deg flat).
     const ux = Math.sin(T) * f, uy = -Math.cos(T);
     const neck = { x: hip.x + ux * 26, y: hip.y + uy * 26 };
     const head = { x: neck.x + ux * 14, y: neck.y + uy * 14 };
