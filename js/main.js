@@ -17,27 +17,36 @@ class FightScene extends Phaser.Scene {
   create() {
     const W = 1280, H = 720;
     this.groundY = 620;
+    // Level width (scrolling): ?width= overrides for testing; default = one
+    // screen so the duel behaves exactly as before (camera clamps to 0).
+    const urlW = Number(new URLSearchParams(location.search).get('width'));
+    this.levelWidth = Number.isFinite(urlW) ? Math.max(W, Math.min(8192, urlW)) : W;
+    // Camera subject: 'duel' = midpoint of the two fighters (classic FG cam),
+    // 'follow' = P1 only with facing lookahead (?follow=1; this becomes the
+    // mook-carving camera).
+    this.camMode = new URLSearchParams(location.search).get('follow') ? 'follow' : 'duel';
     // Floor plane at groundY (620) so feet rest on the DRAWN floor line, not the canvas bottom.
-    this.physics.world.setBounds(0, 0, W, this.groundY);
+    this.physics.world.setBounds(0, 0, this.levelWidth, this.groundY);
     this.physics.world.gravity.y = CFG.gravity;
 
-    // ---- Stage art (drawn once) ----
+    // ---- Stage art (drawn once, spans the whole level) ----
     const bg = this.add.graphics();
     // Sky.
     bg.fillGradientStyle(0x101423, 0x101423, 0x1b2440, 0x1b2440, 1);
-    bg.fillRect(0, 0, W, H);
+    bg.fillRect(0, 0, this.levelWidth, H);
     // Floor slab.
     bg.fillStyle(0x2a3050, 1);
-    bg.fillRect(0, this.groundY, W, H - this.groundY);
+    bg.fillRect(0, this.groundY, this.levelWidth, H - this.groundY);
     bg.lineStyle(3, 0x4a557e, 1);
-    bg.lineBetween(0, this.groundY, W, this.groundY);
+    bg.lineBetween(0, this.groundY, this.levelWidth, this.groundY);
     // Back wall lanes for dojo depth.
     bg.lineStyle(1, 0x232b48, 1);
-    for (let px = 100; px < W; px += 100) bg.lineBetween(px, 120, px, this.groundY);
+    for (let px = 100; px < this.levelWidth; px += 100) bg.lineBetween(px, 120, px, this.groundY);
 
     // ---- Fighters ----
-    this.p1 = new Fighter(this, 420, this.groundY, 1, 0xf2f2f2);
-    this.p2 = new Fighter(this, 860, this.groundY, -1, 0x9ad0ff);
+    const mid = this.levelWidth / 2;
+    this.p1 = new Fighter(this, mid - 220, this.groundY, 1, 0xf2f2f2);
+    this.p2 = new Fighter(this, mid + 220, this.groundY, -1, 0x9ad0ff);
 
     // ---- Input ----
     const kb = this.input.keyboard;
@@ -100,11 +109,17 @@ class FightScene extends Phaser.Scene {
     wireDoubleTap('p2', this.keys.p2.left);
     wireDoubleTap('p2', this.keys.p2.right);
 
-    // ---- Camera shake (hand-rolled: version-proof) ----
-    this.shakeT = 0; this.shakeMag = 0; this.camBase = { x: 0, y: 0 };
+    // ---- Camera (render-side smoothing; sim stays camera-independent) ----
+    // Manual follow (not startFollow) keeps us version-proof and gives the
+    // exact duel/follow semantics below. Shake is an OFFSET on the followed
+    // position, not an absolute scroll (the old behaviour).
+    this.shakeT = 0; this.shakeMag = 0;
+    this.camX = null;                        // eased view centre; lazy-init on frame 1
+    this.cameras.main.setBounds(0, 0, this.levelWidth, H);
 
-    // ---- HUD ----
+    // ---- HUD (screen-fixed: must not scroll with the world) ----
     this.hud = this.add.graphics();
+    this.hud.setScrollFactor(0);
 
     this.acc = 0;
     this.game.events.once('shutdown', () => {});
@@ -231,19 +246,59 @@ class FightScene extends Phaser.Scene {
     }
   }
 
+  makeLabels() {
+    this.labels = [
+      this.add.text(44, 54, 'P1  A/D W Shift  J K', { fontFamily: 'monospace', fontSize: '14px', color: '#8fa0c8' }),
+      this.add.text(1236 - 220, 54, 'P2  Arrows / , .', { fontFamily: 'monospace', fontSize: '14px', color: '#8fa0c8' }),
+    ];
+    for (const t of this.labels) t.setScrollFactor(0);
+  }
+
+  // ---- Camera (render side only — the sim never reads it) ----
+  // duel mode: centre on the midpoint of the fighters, zoomed out if they're
+  //   far apart (classic FG cam, future boss cam).
+  // follow mode: centre on P1 with facing lookahead (mook-carving cam).
+  // Eased on render delta so 60 and 144 Hz feel identical; clamped by the
+  // camera bounds Phaser enforces against the world.
+  updateCamera() {
+    const W = 1280, H = 720;
+    let target;
+    if (this.camMode === 'follow') {
+      const look = this.p1.facing * 110;               // see what you run into
+      target = this.p1.sprite.x + look;
+    } else {
+      const mid = (this.p1.sprite.x + this.p2.sprite.x) / 2;
+      target = mid;
+      // FG cam: don't let one fighter walk out of frame — clamp so both stay
+      // visible when they're within a screen, else follow the midpoint.
+      const span = Math.abs(this.p1.sprite.x - this.p2.sprite.x);
+      if (span < W - 160) {
+        const lo = Math.min(this.p1.sprite.x, this.p2.sprite.x) + (W - 160) / 2;
+        const hi = Math.max(this.p1.sprite.x, this.p2.sprite.x) - (W - 160) / 2;
+        target = (target < lo) ? lo : (target > hi ? hi : target);
+      }
+    }
+    // Ease (rate normalised to 60 Hz; frame-rate independent).
+    const r = Math.min(1, (this.game.loop.delta / 1000) * 9);
+    if (this.camX === null) this.camX = target;
+    this.camX += (target - this.camX) * r;
+
+    // Shake decays on the fixed step (feels the same regardless of fps).
+    let sx = 0, sy = 0;
+    if (this.shakeT > 0) {
+      this.shakeT -= SIM_STEP;
+      sx = (Math.random() - 0.5) * this.shakeMag;
+      sy = (Math.random() - 0.5) * this.shakeMag;
+    }
+    // centre -> scroll. Use setScroll (NOT scrollX=): setScroll clamps to the
+    // camera bounds; the raw property bypasses clamping (screen-edge gaps).
+    this.cameras.main.setScroll(this.camX - W / 2 + sx, sy);
+  }
+
   renderAll() {
     this.p1.render();
     this.p2.render();
-
-    // Camera shake decay.
-    if (this.shakeT > 0) {
-      this.shakeT -= SIM_STEP;
-      this.cameras.main.setScroll(
-        (Math.random() - 0.5) * this.shakeMag,
-        (Math.random() - 0.5) * this.shakeMag);
-    } else {
-      this.cameras.main.setScroll(0, 0);
-    }
+    this.updateCamera();
 
     // HUD health bars.
     const g = this.hud;
@@ -261,13 +316,6 @@ class FightScene extends Phaser.Scene {
     g.fillStyle(0xff5a5a, 1); g.fillRect(rx + barW - w2, 28, w2, barH);
     // Labels.
     this.labels || this.makeLabels();
-  }
-
-  makeLabels() {
-    this.labels = [
-      this.add.text(44, 54, 'P1  A/D W Shift  J K', { fontFamily: 'monospace', fontSize: '14px', color: '#8fa0c8' }),
-      this.add.text(1236 - 220, 54, 'P2  Arrows / , .', { fontFamily: 'monospace', fontSize: '14px', color: '#8fa0c8' }),
-    ];
   }
 }
 
