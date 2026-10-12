@@ -60,11 +60,7 @@ const CFG = {
   // Ragdoll (fake physics — see Fighter.ragStep). Joints are damped pendulums;
   // the corpse's arcade body does the ballistic flight for free.
   ragdoll: {
-    bounces: 1,           // floor contacts before settling (meteor kills spend it)
-    bounceMinVy: 190,     // impact speed needed to bounce
-    bounceMaxVy: 520,     // rebound speed ceiling (cap impact then restitution)
     airK: 26, airC: 3.5,        // limb pendulum while airborne (underdamped=whips)
-    torsoK: 60, torsoC: 12,     // torso pendulum while airborne
     sprawlFrames: 4,      // frames for the lie-down pose blend (user: "a couple frames")
     airDrag: 0.12,        // per-second corpse air drag (near-none: momentum!)
     groundFriction: 8,    // per-second slide decay once on the floor (stop fast)
@@ -558,12 +554,16 @@ class Fighter {
     // to OVERWRITE knockback velocity). Add liveliness ON TOP of the killing
     // blow's launch, capped to the jump-speed scale so nothing leaves the sky.
     if (this.onGround) v.y = Math.max(CFG.jump.velocity, Math.min(v.y, 0) - (140 + Math.random() * 90));
+    // Remember the LAUNCH vertical velocity — ragStep's lie-down lean reads it
+    // so a corpse killed going UP (uppercut/cartwheel) topples backward and one
+    // killed going DOWN (axe kick/meteor) crumples forward (user: "different for
+    // each move"). Captured before the body is disabled.
+    const vy0 = v.y;
     // Hand physics to ragStep: with the arcade body DISABLED, world.step
     // skips it entirely — ragStep's manual integration is the only mover
     // (no gravity double-apply) and settled corpses touch zero physics.
     this.body.enable = false;
-    // Hard hits (big downward knock or a meteor spike) earn floor bounces.
-    const bounces = hb && (hb.meteor || Math.abs(hb.knock.y) > 300) ? (hb.meteor ? 2 : 1) : 0;
+    // No floor bounce (user: "corpses bounce before settling"): landings stick.
     // Live-flailer cap: if too many corpses are mid-air, force-freeze the
     // oldest (settled corpses cost nothing, so only the flailing cost).
     const live = this.scene.fighters.filter((f) => f.ragdoll && !f.ragdoll.settled && !f.gone);
@@ -572,23 +572,19 @@ class Fighter {
     // straight down. Angular velocities seeded from the knock direction so
     // the corpse's limbs trail the blow.
     const fling = this.facing * (2 + Math.random() * 3);
-    // Fall/lie targets chosen at death: torso ends flat (~90deg) tipped in
-    // the knock direction; limbs spring to near-horizontal sprawl once
-    // grounded (they dangle at rest 0 while airborne).
     const lieDir = (Math.sign(v.x || -this.facing) * this.facing) >= 0 ? 1 : -1;
-    const lie = () => (Math.random() < 0.5 ? -1 : 1) * (1.15 + Math.random() * 0.4);
     this.ragdoll = {
-      t: 0, frames: 0, alpha: 1, settled: false, freeze: null, restLeft: 0, bounces, gnd: false,
+      t: 0, frames: 0, alpha: 1, settled: false, freeze: null, restLeft: 0, gnd: false,
       hipY: this.sprite.y + 10,   // drawn pivot; ragStep owns it (flight rides sprite, blend sinks it)
-      sprawl: null, sprawlDone: false,
+      sprawl: null, sprawlDone: false, vy0,
       torso: { th: this.facing * (0.30 + Math.random() * 0.45), thv: fling, th0: lieDir * (1.3 + Math.random() * 0.2) },
-      legA:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), restF: lie() },
-      legB:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), restF: lie() },
-      armA:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9), restF: lie() },
-      armB:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9), restF: lie() },
+      legA:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7) },
+      legB:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7) },
+      armA:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9) },
+      armB:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9) },
     };
     // Meteor spikes: skip the pop, slam straight down.
-    if (hb && hb.meteor) { v.y = Math.max(v.y, 420); this.ragdoll.torso.thv = this.facing * 6; }
+    if (hb && hb.meteor) { v.y = Math.max(v.y, 420); this.ragdoll.vy0 = v.y; this.ragdoll.torso.thv = this.facing * 6; }
   }
 
   // Fake-physics ragdoll (no physics engine — Star Fetchers/YOMI approach):
@@ -636,34 +632,40 @@ class Fighter {
       // 4-frame angle lerp into an explicit lying pose (torso flat, head on
       // the knock side, legs extended trailing, arms flopped). No springs
       // involved — scripted blend of angles only.
-      if (!rd.sprawl && !rd.sprawlDone) {
-        const dirX = Math.sign(v.x || this.facing) || 1;
-        const whip = Math.min(Math.max(v.y, 0), 600) * 0.0022 * dirX;
-        const f = this.facing;
-        rd.sprawl = {
-          t: 0, frames: K.sprawlFrames,
-          from: { torso: rd.torso.th, legA: rd.legA.th, legB: rd.legB.th, armA: rd.armA.th, armB: rd.armB.th },
-          to: {
-            torso: dirX * (1.44 + Math.random() * 0.10) * f + whip * 0.2,
-            legA: -dirX * (1.22 + Math.random() * 0.25) * f,
-            legB: -dirX * (1.05 + Math.random() * 0.35) * f,
-            armA: (Math.random() < 0.5 ? 1 : -1) * (0.95 + Math.random() * 0.5) * f,
-            armB: (Math.random() < 0.5 ? 1 : -1) * (0.95 + Math.random() * 0.5) * f,
-          },
-          hipFrom: rd.hipY, hipTo: this.scene.groundY - 14,
-        };
-        rd.torso.thv = 0;
-        for (const j of [rd.legA, rd.legB, rd.armA, rd.armB]) j.thv = 0;
-      }
-      if (v.y > K.bounceMinVy && rd.bounces > 0) {
-        rd.bounces--;
-        v.y = -Math.min(v.y, K.bounceMaxVy) * 0.45;   // hard deaths bounce
-        rd.sprawl = null;                             // re-fires on next landing
-      } else if (v.y > 0) {
-        v.y = 0;
-      }
-      v.x *= (1 - K.groundFriction * dt);             // slide, then stop fast
-    } else if (!rd.sprawl) {
+        if (!rd.sprawl && !rd.sprawlDone) {
+          const dirX = Math.sign(v.x || this.facing) || 1;
+          const whip = Math.min(Math.max(v.y, 0), 600) * 0.0022 * dirX;
+          const f = this.facing;
+          // LEAN from the LAUNCH (user): killed going UP (uppercut/cartwheel;
+          // vy0 << 0) they land on their BACK — head trails the travel,
+          // arms flung overhead. Killed going DOWN (axe kick/meteor; vy0 >> 0)
+          // they FACEPLANT — head leads the slide, arms reaching forward,
+          // deeper over-rotation. Near-flat kills mix randomly. Deeper |lean|
+          // rotates further past flat (one shoulder up) — so each finisher's
+          // corpse reads differently.
+          const lean = Math.max(-1, Math.min(1, (rd.vy0 || 0) / 640));  // -1 up, +1 down
+          const headWorld = lean > 0.15 ? dirX
+                          : lean < -0.15 ? -dirX
+                          : (Math.random() < 0.5 ? dirX : -dirX);
+          const over = 1.28 + Math.abs(lean) * 0.30 + Math.random() * 0.08;
+          rd.sprawl = {
+            t: 0, frames: K.sprawlFrames,
+            from: { torso: rd.torso.th, legA: rd.legA.th, legB: rd.legB.th, armA: rd.armA.th, armB: rd.armB.th },
+            to: {
+              torso: headWorld * over * f + whip * 0.2,
+              legA: -headWorld * (1.22 + Math.random() * 0.25) * f,
+              legB: -headWorld * (1.05 + Math.random() * 0.35) * f,   // one leg less straight
+              armA: (lean < -0.15 ? headWorld : (Math.random() < 0.5 ? 1 : -1)) * (0.95 + Math.random() * 0.55) * f,
+              armB: (lean > 0.15 ? headWorld : (Math.random() < 0.5 ? 1 : -1)) * (0.95 + Math.random() * 0.55) * f,
+            },
+            hipFrom: rd.hipY, hipTo: this.scene.groundY - 14,
+          };
+          rd.torso.thv = 0;
+          for (const j of [rd.legA, rd.legB, rd.armA, rd.armB]) j.thv = 0;
+        }
+        if (v.y > 0) v.y = 0;                           // landings STICK (user: no bounce)
+        v.x *= (1 - K.groundFriction * dt);             // slide, then stop fast
+      } else if (!rd.sprawl) {
       // Airborne: the drawn hip rides the sprite (the OLD tilt-driven sink
       // pinned flying corpses to the floor line — that's why uppercut KOs
       // looked like they barely left the ground; they fly ~100px now).
