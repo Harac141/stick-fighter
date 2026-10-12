@@ -571,20 +571,38 @@ class Fighter {
     // Joint angles: torso 0 = upright (topples to ±90 = flat); limbs 0 = hang
     // straight down. Angular velocities seeded from the knock direction so
     // the corpse's limbs trail the blow.
+    // LIE-DOWN DIRECTION DECIDED ONCE AT DEATH (user: head landed one way then
+    // flipped). headWorld = the world side the head ends on: killed going UP
+    // (launch vy<0) head trails the travel -> lands on the back; killed going
+    // DOWN (vy>0) head LEADS -> faceplant; flat kills random. The airborne
+    // flail target AND the lie-down blend target both read THIS value (and
+    // launch-time v.x, immune to later wall bounces), so the head never has
+    // to swing 180deg across the landing blend.
+    const lean = Math.max(-1, Math.min(1, (vy0 || 0) / 640));
+    const dirX0 = Math.sign(v.x || -this.facing) || 1;
+    const headWorld = lean > 0.15 ? dirX0
+                    : lean < -0.15 ? -dirX0
+                    : (Math.random() < 0.5 ? dirX0 : -dirX0);
     const fling = this.facing * (2 + Math.random() * 3);
-    const lieDir = (Math.sign(v.x || -this.facing) * this.facing) >= 0 ? 1 : -1;
     this.ragdoll = {
       t: 0, frames: 0, alpha: 1, settled: false, freeze: null, restLeft: 0, gnd: false,
       hipY: this.sprite.y + 10,   // drawn pivot; ragStep owns it (flight rides sprite, blend sinks it)
-      sprawl: null, sprawlDone: false, vy0,
-      torso: { th: this.facing * (0.30 + Math.random() * 0.45), thv: fling, th0: lieDir * (1.3 + Math.random() * 0.2) },
-      legA:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7) },
-      legB:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7) },
+      sprawl: null, sprawlDone: false, vy0, lean, headWorld,
+      torso: { th: this.facing * headWorld * (0.25 + Math.random() * 0.35), thv: fling },
+      legA:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), bend: 0 },
+      legB:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), bend: 0 },
       armA:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9) },
       armB:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9) },
     };
-    // Meteor spikes: skip the pop, slam straight down.
-    if (hb && hb.meteor) { v.y = Math.max(v.y, 420); this.ragdoll.vy0 = v.y; this.ragdoll.torso.thv = this.facing * 6; }
+    // Meteor spikes: skip the pop, slam straight down (guaranteed faceplant).
+    if (hb && hb.meteor) {
+      v.y = Math.max(v.y, 420);
+      const rd0 = this.ragdoll;
+      rd0.vy0 = v.y; rd0.lean = 1;
+      rd0.headWorld = Math.sign(v.x || -this.facing) || 1;
+      rd0.torso.th = this.facing * rd0.headWorld * 0.4;
+      rd0.torso.thv = this.facing * 6;
+    }
   }
 
   // Fake-physics ragdoll (no physics engine — Star Fetchers/YOMI approach):
@@ -633,30 +651,33 @@ class Fighter {
       // the knock side, legs extended trailing, arms flopped). No springs
       // involved — scripted blend of angles only.
         if (!rd.sprawl && !rd.sprawlDone) {
-          const dirX = Math.sign(v.x || this.facing) || 1;
-          const whip = Math.min(Math.max(v.y, 0), 600) * 0.0022 * dirX;
+          const whip = Math.min(Math.max(v.y, 0), 600) * 0.0022 * (Math.sign(v.x || this.facing) || 1);
           const f = this.facing;
-          // LEAN from the LAUNCH (user): killed going UP (uppercut/cartwheel;
-          // vy0 << 0) they land on their BACK — head trails the travel,
-          // arms flung overhead. Killed going DOWN (axe kick/meteor; vy0 >> 0)
-          // they FACEPLANT — head leads the slide, arms reaching forward,
-          // deeper over-rotation. Near-flat kills mix randomly. Deeper |lean|
-          // rotates further past flat (one shoulder up) — so each finisher's
-          // corpse reads differently.
-          const lean = Math.max(-1, Math.min(1, (rd.vy0 || 0) / 640));  // -1 up, +1 down
-          const headWorld = lean > 0.15 ? dirX
-                          : lean < -0.15 ? -dirX
-                          : (Math.random() < 0.5 ? dirX : -dirX);
+          // LIE target from the DEATH-TIME headWorld/lean (ko) — recomputing
+          // from live velocity here let wall bounces flip the head mid-blend
+          // (user). Randomness per corpse: arms reach out sometimes, a leg
+          // bends up occasionally. Nothing fancy — just not all-same.
+          const lean = rd.lean, hw = rd.headWorld;
           const over = 1.28 + Math.abs(lean) * 0.30 + Math.random() * 0.08;
+          // Per-corpse variation (user): arms reach OUT sometimes, a leg
+          // BENDS (knee up) occasionally. Angles mirrored by facing at use.
+          const armT = () => (Math.random() < 0.35
+            ? (Math.random() < 0.5 ? -hw : hw) * (1.25 + Math.random() * 0.45)   // reaching out
+            : (Math.random() < 0.5 ? 1 : -1) * (0.95 + Math.random() * 0.55));
+          const bendT = () => (Math.random() < 0.35
+            ? (Math.random() < 0.5 ? -1 : 1) * (0.7 + Math.random() * 0.5)
+            : 0);
           rd.sprawl = {
             t: 0, frames: K.sprawlFrames,
-            from: { torso: rd.torso.th, legA: rd.legA.th, legB: rd.legB.th, armA: rd.armA.th, armB: rd.armB.th },
+            from: { torso: rd.torso.th, legA: rd.legA.th, legB: rd.legB.th, armA: rd.armA.th, armB: rd.armB.th,
+                    bendA: rd.legA.bend, bendB: rd.legB.bend },
             to: {
-              torso: headWorld * over * f + whip * 0.2,
-              legA: -headWorld * (1.22 + Math.random() * 0.25) * f,
-              legB: -headWorld * (1.05 + Math.random() * 0.35) * f,   // one leg less straight
-              armA: (lean < -0.15 ? headWorld : (Math.random() < 0.5 ? 1 : -1)) * (0.95 + Math.random() * 0.55) * f,
-              armB: (lean > 0.15 ? headWorld : (Math.random() < 0.5 ? 1 : -1)) * (0.95 + Math.random() * 0.55) * f,
+              torso: (hw * over + whip * 0.2) * f,
+              legA: (-hw * (1.22 + Math.random() * 0.25)) * f,
+              legB: (-hw * (1.05 + Math.random() * 0.35)) * f,
+              armA: (lean < -0.15 && Math.random() < 0.5 ? hw * (1.25 + Math.random() * 0.45) : armT()) * f,
+              armB: (lean > 0.15 && Math.random() < 0.5 ? hw * (1.25 + Math.random() * 0.45) : armT()) * f,
+              bendA: bendT() * f, bendB: bendT() * f,
             },
             hipFrom: rd.hipY, hipTo: this.scene.groundY - 14,
           };
@@ -683,12 +704,15 @@ class Fighter {
       rd.legB.th = lerp(s.from.legB, s.to.legB);
       rd.armA.th = lerp(s.from.armA, s.to.armA);
       rd.armB.th = lerp(s.from.armB, s.to.armB);
+      rd.legA.bend = lerp(s.from.bendA, s.to.bendA);
+      rd.legB.bend = lerp(s.from.bendB, s.to.bendB);
       rd.hipY = lerp(s.hipFrom, s.hipTo);
       if (u >= 1) { rd.sprawl = null; rd.sprawlDone = true; }
     }
 
     // Joint springs: airborne flail ONLY (limbs whip underdamped on the way
-    // down); on the ground the lie-down blend owns the angles.
+    // down toward the death-decided topple); on the ground the lie-down
+    // blend owns the angles.
     const grounded = onGnd && v.y === 0;
     rd.gnd = grounded;
     if (!grounded && !rd.sprawl) {
@@ -696,7 +720,7 @@ class Fighter {
         j.thv += (-K.airK * (j.th - rest) - K.airC * j.thv) * dt;
         j.th += j.thv * dt;
       };
-      set(rd.torso, rd.torso.th0 * 0.55);
+      set(rd.torso, rd.headWorld * 0.8 * this.facing);
       set(rd.legA, 0); set(rd.legB, 0); set(rd.armA, 0); set(rd.armB, 0);
     }
 
@@ -727,9 +751,9 @@ class Fighter {
     const elbowB = seg(neck.x, neck.y, rd.armB.th * f, 19);
     const handB = seg(elbowB.x, elbowB.y, rd.armB.th * 1.35 * f, 18);
     const kneeA = seg(hip.x, hip.y, rd.legA.th * f, 24);
-    const footA = seg(kneeA.x, kneeA.y, rd.legA.th * 0.7 * f, 24);
+    const footA = seg(kneeA.x, kneeA.y, rd.legA.th * 0.7 * f + (rd.legA.bend || 0), 24);
     const kneeB = seg(hip.x, hip.y, rd.legB.th * f, 24);
-    const footB = seg(kneeB.x, kneeB.y, rd.legB.th * 0.7 * f, 24);
+    const footB = seg(kneeB.x, kneeB.y, rd.legB.th * 0.7 * f + (rd.legB.bend || 0), 24);
     // FLOOR CLAMP (user: legs sank through the ground): FK has no floor
     // constraint, so sprawl angles can drive feet/hands below the floor line.
     // Pin contact points at the floor; segment lengths shorten a hair when
