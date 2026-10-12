@@ -265,14 +265,36 @@ class FightScene extends Phaser.Scene {
   // own; wallContact also freezes the stride phase to kill 1-frame lag).
   // Pairwise over the roster: O(n^2) but trivial below ~50 bodies; a spatial
   // grid is the answer if crowds ever get that big.
+  //
+  // DIRECTIONAL mook-vs-mook collision (user: the pack was hardening into one
+  // wall — a retreating mook couldn't retreat because lined-up teammates
+  // behind him blocked him, so knockback stopped mattering in a crowd).
+  // Rule: two AI mooks are SOLID only when they're trying to go the SAME way
+  // (so an attacking line spreads out instead of stacking on one spot). They
+  // PHASE THROUGH each other when moving in OPPOSITE directions, or when
+  // either is mid-knockback (hurt) — so a launched/slammed mook flies clean
+  // through the pack and the pack can't be used as an immovable wall.
+  // Player pairs (inputKey) are ALWAYS solid: the pin/duel body-block is
+  // load-bearing and was not part of the complaint.
   separateBodies() {
     const fs = this.fighters;
     const intent = (f) => (f.inputKey && this.lastIn[f.inputKey]) || (f.aiIn) || {};
+    const MOVE_EPS = 40;   // |vx| below this reads as "not really moving"
+    const solid = (A, B) => {
+      if (A.inputKey || B.inputKey) return true;            // any player pair: always solid
+      if (A.hitstun > 0 || B.hitstun > 0) return false;     // mid-knockback: phase through
+      const va = A.body.velocity.x, vb = B.body.velocity.x;
+      const sa = Math.abs(va) > MOVE_EPS ? Math.sign(va) : 0;
+      const sb = Math.abs(vb) > MOVE_EPS ? Math.sign(vb) : 0;
+      if (sa !== 0 && sb !== 0 && sa !== sb) return false;  // opposite: phase through
+      return true;                                          // same way / holding: solid
+    };
     for (const f of fs) { f.wallContact = false; f.wallBlockDir = 0; }
     for (let i = 0; i < fs.length; i++) {
       if (fs[i].dead) continue;
       for (let j = i + 1; j < fs.length; j++) {
         if (fs[j].dead) continue;
+        if (!solid(fs[i], fs[j])) continue;                 // non-solid AI pair: pass through
         const a = fs[i].sprite, b = fs[j].sprite;
         const dx = b.x - a.x;
         const overlap = CFG.body.width - Math.abs(dx);
