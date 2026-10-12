@@ -271,38 +271,6 @@ class FightScene extends Phaser.Scene {
   }
 }
 
-// ---- Skid slider (DOM overlay; live-binds CFG.run.turnDecel) ----
-// Low turnDecel = long skid, high = sharp stop. Slider runs 300..3000 inverted
-// so dragging RIGHT = more skid (more intuitive than raw physics terms).
-(function addSkidSlider() {
-  const wrap = document.createElement('div');
-  wrap.id = 'skid-ui';
-  wrap.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:10px;'
-    + 'z-index:10;font:13px monospace;color:#8fa0c8;background:rgba(8,8,12,0.75);'
-    + 'padding:6px 12px;border-radius:8px;display:flex;gap:10px;align-items:center;user-select:none;';
-  const label = document.createElement('span');
-  label.textContent = 'skid';
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  // Controls RELEASE skid (friction): right = lower friction = longer slide.
-  // 2400 = the old abrupt stop; 100 = ice-skate.
-  slider.min = '100'; slider.max = '2400'; slider.step = '10';
-  slider.value = String(2500 - Fighter.CFG.run.friction); // inverted: right = more skid
-  slider.style.cssText = 'width:180px;accent-color:#f2b705;';
-  const val = document.createElement('span');
-  val.style.minWidth = '46px';
-  const sync = () => {
-    const friction = 2500 - Number(slider.value);
-    Fighter.CFG.run.friction = friction;
-    val.textContent = (friction === 2400) ? 'old' : (friction === 500 ? 'default' : String(friction));
-  };
-  slider.addEventListener('input', sync);
-  sync();
-  wrap.appendChild(label); wrap.appendChild(slider); wrap.appendChild(val);
-  document.body.appendChild(wrap);
-  window.__skidSlider = slider;
-})();
-
 window.__GAME = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',

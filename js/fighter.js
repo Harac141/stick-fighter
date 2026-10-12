@@ -41,7 +41,7 @@ function ik2(rx, ry, tx, ty, l1, l2, kind, facing) {
 // ---- Tunables ---------------------------------------------------------------
 const CFG = {
   gravity: 1900,
-  run:      { accel: 3000, turnDecel: 2600, maxSpeed: 250, friction: 500 },  // friction = release skid (slider-bound); 2400 = old abrupt stop
+  run:      { accel: 3000, turnDecel: 2600, maxSpeed: 250, friction: 500 },  // friction = release skid (tuned; was slider-bound during dev)
   air:      { accel: 1400, maxSpeed: 260 },
   jump:     { velocity: -640, cutMultiplier: 0.45 },   // variable jump height
   dash:     { burstSpeed: 560, burstFrames: 10, sprintSpeed: 450, cooldown: 26 },

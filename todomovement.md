@@ -2,4 +2,7 @@
     -> Fixed: gait phase advances by SIGNED distance (travel direction vs facing), so moving opposite facing plays the planted walk/sprint cycle backwards. Still foot-planted (support foot sweeps forward exactly as body slides back). Verified via knockback: run state at vx -512, phase decreasing frame-over-frame. Hurt recoil pose unchanged.
 [x] Jumping and falling animations should transition smoothly.
     -> Fixed in two passes. (1) One airborne pose (tuck->reach) replaces the discrete jump/fall poses. (2) Made gradual on request: the tuck->reach parameter (airT) is now eased on the FIXED sim step (10%/frame) toward the vy-derived target instead of being read from vy at render time, so it trails gravity ~half a beat and can't snap when jump-cut shortens vy mid-flight. Audited: airT 0.32 at the true apex (still tucking past the top), joint motion dips to ~1px/frame through apex and jump-cut, max 13.2px/frame in air.
-[ ] Get rid of the skid slider. It was useful but we don't need it anymore.
+[x] Get rid of the skid slider. It was useful but we don't need it anymore.
+    -> Removed the DOM overlay from main.js. Friction stays at the tuned 500 (verified release-stop distance 65px = slider's default position), CFG comment updated. If we ever need to re-tune: Fighter.CFG.run.friction in the console.
+[ ] During the jump animation, one of the hands is way too close to the head.
+[ ] At one point in the sprinting animation the body pops up for like a frame and it's distracting.
