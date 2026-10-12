@@ -112,6 +112,8 @@ class Fighter {
     this.health = 100;
     this.animTime = 0;         // seconds, drives idle bob
     this.cyclePhase = 0;       // 0..1 gait phase, advanced by ACTUAL speed (no foot slip)
+    this.wallContact = false;  // scene sets true when body-blocked by opponent
+    this.wallBlockDir = 0;     // +1/-1: direction the opponent is blocking
     this.airborne = false;
 
     // Cooldowns & timers (frames).
@@ -174,9 +176,21 @@ class Fighter {
     // Air/ground bookkeeping.
     this.airborne = !this.onGround;
 
+    // Body-block contact (set by scene.separateBodies; consumed here so it
+    // survives until the next sim step's update). While wallContact: no
+    // striding, no driving into the wall, and ground state reads idle — a
+    // fighter pressing on an opponent STOPS, they never run in place.
+    // wallContact is refreshed every sim step by scene.separateBodies (sticky
+    // touch test), so we READ it here rather than consume it.
+    const wall = this.wallContact && !this.airborne;
+    const wallDir = this.wallBlockDir;
+
     // Advance gait by ACTUAL distance travelled — runs during attacks and
     // dash-exit slides too (legs keep cycling whenever the feet are moving).
-    if (!this.airborne && Math.abs(this.body.velocity.x) > 20) {
+    // While wallContact (body-blocked by the opponent) the stride FREEZES:
+    // the animation is a function of TRUE ground speed, so a stopped fighter
+    // stands in a planted pose instead of moonwalk-trotting in place.
+    if (!this.airborne && !wall && Math.abs(this.body.velocity.x) > 20) {
       this.cyclePhase = (this.cyclePhase + Math.abs(this.body.velocity.x) * STEP / this.strideNow()) % 1;
     }
 
@@ -222,6 +236,10 @@ class Fighter {
       if (input.left)  { drive = -1; if (!this.airborne) this.facing = -1; }
       if (input.right) { drive = +1; if (!this.airborne) this.facing = +1; }
 
+      // Pressing into the body-block wall: no accel (this is the moonwalk-
+      // prevention; true velocity stays pinned at 0 toward the opponent).
+      if (wall && drive === wallDir) { drive = 0; this.body.setVelocityX(0); }
+
       if (drive !== 0) {
         const v = this.body.velocity.x;
         // If we're ALREADY faster than max in the held direction (dash exit,
@@ -241,7 +259,7 @@ class Fighter {
       }
 
       if (!this.airborne) {
-        if (Math.abs(this.body.velocity.x) > 20) this.state = 'run';
+        if (Math.abs(this.body.velocity.x) > 20 && !wall) this.state = 'run';
         else this.state = 'idle';
       } else {
         this.state = this.body.velocity.y < 0 ? 'jump' : 'fall';
@@ -663,7 +681,6 @@ class Fighter {
     // ============ ARM LAYER ============
     let elbowF = null, elbowB = null, handF = null, handB = null;
     let uArmF = UARM, fArmF = FARM;
-    let burstSides = null;
 
     if (this.state === 'attack') {
       const atk = CFG.attacks[this.currentAttack] || CFG.attacks.jab;
@@ -698,40 +715,36 @@ class Fighter {
       //          cancel horizontal travel — that was the "arms don't move".
       const sprint = mode === 'sprint';
       const A_MAX = (sprint ? 52 : 34) * Math.PI / 180;
-      const armAt = (a) => {
-        const t = (a / A_MAX + 1) / 2;                     // 0 back .. 1 front
-        const bend = (sprint ? 12 + 88 * t : 18 + 52 * t) * Math.PI / 180;
+      const bendOf = (a) => {                        // stride elbow flexion (rad)
+        const t = (a / A_MAX + 1) / 2;
+        return (sprint ? 12 + 88 * t : 18 + 52 * t) * Math.PI / 180;
+      };
+      const armAt = (a, bend) => {
         const fa = a + bend;
         const ex = neck.x + f * Math.sin(a) * UARM, ey = neck.y + Math.cos(a) * UARM;
         return { elbow: { x: ex, y: ey },
                  hand: { x: ex + f * Math.sin(fa) * FARM, y: ey + Math.cos(fa) * FARM } };
       };
+      // BURST overlay blends the arm PARAMETERS (pendulum angle + flexion),
+      // never elbow/hand POINTS separately: a fixed elbow while the hand
+      // blends crosses the shoulder->hand line and flips the IK side (the
+      // dash/sprint flip). One FK formula generating elbow+hand together
+      // makes them structurally unable to disagree.
+      const ease = (this.state === 'dash' && this.dashTimer > 0)
+        ? Math.pow(this.dashTimer / CFG.dash.burstFrames, 0.8) : 0;
+      const lp = (x, y, w) => x + (y - x) * w;
+      // Sprint-start arm drive (fists pump, not windmill): front elbow fwd
+      // &90deg flexed (driving fist at shoulder height), rear elbow high-back
+      // with the trailing forearm angled down. Bends stay 70-90deg through
+      // the blend, so the IK elbow can never go collinear with its arm.
+      const LEAP_F = { a: 75 * Math.PI / 180, bend: 90 * Math.PI / 180 };
+      const LEAP_B = { a: -120 * Math.PI / 180, bend: 70 * Math.PI / 180 };
       const a1 = A_MAX * Math.cos(2 * Math.PI * ((this.cyclePhase + 0.5) % 1));
       const a2 = A_MAX * Math.cos(2 * Math.PI * this.cyclePhase);
-      const A = armAt(a1), B = armAt(a2);          // opposite phase to legs
+      const A = armAt(lp(a1, LEAP_F.a, ease), lp(bendOf(a1), LEAP_F.bend, ease));
+      const B = armAt(lp(a2, LEAP_B.a, ease), lp(bendOf(a2), LEAP_B.bend, ease));
       handF = A.hand; elbowF = A.elbow;
       handB = B.hand; elbowB = B.elbow;
-      if (this.state === 'dash' && this.dashTimer > 0) {
-        // LEAP ARMS held at a fixed IK-consistent look for the whole burst.
-        // Elbow POINTS must not be lerped (hand and elbow crossing the
-        // shoulder->hand line at different rates flipped the elbow side
-        // mid-pose); hands still ease toward the stride as the burst fades.
-        const ease = Math.pow(this.dashTimer / CFG.dash.burstFrames, 0.8);
-        const lp = (a, b) => ({ x: a.x + (b.x - a.x) * ease, y: a.y + (b.y - a.y) * ease });
-        const leapHF = { x: hipX + f * 22, y: feetY - 70 };
-        const leapHB = { x: hipX - f * 18, y: feetY - 50 };
-        const leapEF = { x: neck.x + f * 10, y: neck.y - 8 };   // elbow raised (takeoff)
-        const leapEB = { x: neck.x - f * 12, y: neck.y + 2 };   // trailing arm low
-        handF = lp(handF, leapHF);
-        handB = lp(handB, leapHB);
-        elbowF = leapEF;
-        elbowB = leapEB;
-        const cr = (a, b, q) => (b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x);
-        burstSides = {
-          F: Math.sign(cr(neck, leapHF, leapEF)) || 1,
-          B: Math.sign(cr(neck, leapHB, leapEB)) || 1,
-        };
-      }
     } else {                                        // idle breathing guard
       const bob = Math.sin(this.animTime * 3) * 1.5;
       handF = P(f * 16, feetY - 64 + bob); handB = P(f * 4, feetY - 66 + bob);
@@ -747,9 +760,6 @@ class Fighter {
       kneeB: ik2(hipX, hipY, footF.x, footF.y, THIGH, SHIN, 'knee', f), footB: footF,
       elbowA: elbowB, handA: handB, elbowB: elbowF, handB: handF,
       fkElbows,
-      // fixed elbow side authority during the burst (slot A = back arm)
-      elbowSideA: burstSides ? burstSides.B : null,
-      elbowSideB: burstSides ? burstSides.F : null,
     };
   }
 

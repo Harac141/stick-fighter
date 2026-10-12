@@ -147,6 +147,7 @@ class FightScene extends Phaser.Scene {
   simStep() {
     const i1 = this.sampleInput('p1');
     const i2 = this.sampleInput('p2');
+    this.lastIn = { p1: i1, p2: i2 };   // press-intent for separateBodies
     this.p1.update(i1);
     this.p2.update(i2);
     this.resolveHits();
@@ -184,20 +185,49 @@ class FightScene extends Phaser.Scene {
     this.shakeMag = Math.min(14, 3 + hb.damage * 0.6);
   }
 
-  // Push apart when bodies overlap so fighters don't stack inside each other.
+  // Body-block: fighters can't occupy the same space. Push apart AND kill
+  // drive-into-contact velocity (option 2: hitting the opponent slows the
+  // TRUE speed, so a blocked runner really stops instead of running in place
+  // — the gait, being a function of real speed, then falls to idle on its
+  // own; wallContact also freezes the stride phase to kill 1-frame lag).
   separateBodies() {
     const a = this.p1.sprite, b = this.p2.sprite;
     const dx = b.x - a.x;
     const overlap = CFG.body.width - Math.abs(dx);
-    if (overlap > 0 && Math.abs(a.y - b.y) < CFG.body.height) {
-      const push = overlap / 2 + 0.5;
-      const dir = dx >= 0 ? 1 : -1;
-      // Move the game object, then resync the body. (body.reset() zeroes
-      // velocity — that would murder momentum every time fighters touch.)
-      a.x -= dir * push;
-      b.x += dir * push;
-      a.body.updateFromGameObject();
-      b.body.updateFromGameObject();
+    const vertical = Math.abs(a.y - b.y) < CFG.body.height;
+    // STICKY touch (1.5px tolerance): a pinned fighter sits exactly at body
+    // width after push-apart. If we required vx>0 into the wall, zeroing vx
+    // would clear the flag next frame and accel would restart = stutter-
+    // moonwalk. Press-intent (held direction key) keeps the wall true while
+    // the player leans on the opponent.
+    // 3px slop: push-apart equilibrium sits ~1px past true contact; requiring
+    // exact overlap made the flag flicker and accel restart each frame (the
+    // vx 50 = one accel step stutter).
+    const touching = overlap > -3 && vertical;
+    const dir = dx >= 0 ? 1 : -1;
+    const in1 = (this.lastIn && this.lastIn.p1) || {};
+    const in2 = (this.lastIn && this.lastIn.p2) || {};
+
+    if (touching) {
+      this.p1.wallContact = in1.heldDir === dir;   // p1 pressing toward p2
+      this.p1.wallBlockDir = dir;
+      this.p2.wallContact = in2.heldDir === -dir;  // p2 pressing toward p1
+      this.p2.wallBlockDir = -dir;
+      if (overlap > 0) {
+        const push = overlap / 2 + 0.5;
+        // Momentum-preserving separation (never body.reset, which zeroes vx):
+        a.x -= dir * push;
+        b.x += dir * push;
+        // Kill only velocity driving INTO the opponent; knockback pointing
+        // away, dash-aways and jukes survive untouched.
+        if (dir * a.body.velocity.x > 0) a.body.setVelocityX(0);
+        if (-dir * b.body.velocity.x > 0) b.body.setVelocityX(0);
+        a.body.updateFromGameObject();
+        b.body.updateFromGameObject();
+      }
+    } else {
+      this.p1.wallContact = false; this.p1.wallBlockDir = 0;
+      this.p2.wallContact = false; this.p2.wallBlockDir = 0;
     }
   }
 
