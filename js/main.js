@@ -47,6 +47,10 @@ class FightScene extends Phaser.Scene {
     const mid = this.levelWidth / 2;
     this.p1 = new Fighter(this, mid - 220, this.groundY, 1, 0xf2f2f2);
     this.p2 = new Fighter(this, mid + 220, this.groundY, -1, 0x9ad0ff);
+    this.p1.inputKey = 'p1'; this.p2.inputKey = 'p2';   // map to keyboard input slots
+    // Master roster: everyone the sim steps, hits and separates. p1/p2 stay
+    // as named refs (input + HUD); mooks append here (ai-driven).
+    this.fighters = [this.p1, this.p2];
 
     // ---- Input ----
     const kb = this.input.keyboard;
@@ -163,15 +167,23 @@ class FightScene extends Phaser.Scene {
     const i1 = this.sampleInput('p1');
     const i2 = this.sampleInput('p2');
     this.lastIn = { p1: i1, p2: i2 };   // press-intent for separateBodies
-    this.p1.update(i1);
-    this.p2.update(i2);
+    for (const f of this.fighters) {
+      if (f.dead) continue;
+      // Player fighters read their sampled input; AI fighters (mooks) carry
+      // their own fabricated input dict on f.aiIn (same shape as keyboard).
+      const inp = f.inputKey ? this.lastIn[f.inputKey] : (f.aiIn || {});
+      f.update(inp);
+    }
     this.resolveHits();
     this.separateBodies();
   }
 
   resolveHits() {
+    // Attack-box x every-other-fighter. One-hit-per-swing stays GLOBAL
+    // (hitConfirmed): a swing connects with at most one target — right for
+    // mook jabs; multi-target heavies become a per-attack flag later.
     const check = (attacker, defender) => {
-      if (!attacker.hitboxes.length) return;
+      if (!attacker.hitboxes.length || defender.dead) return;
       const dRect = {
         x: defender.sprite.x - CFG.body.width / 2,
         y: defender.sprite.y - CFG.body.height / 2,
@@ -186,8 +198,13 @@ class FightScene extends Phaser.Scene {
         }
       }
     };
-    check(this.p1, this.p2);
-    check(this.p2, this.p1);
+    for (const a of this.fighters) {
+      if (a.dead) continue;
+      for (const d of this.fighters) {
+        if (d === a) continue;
+        check(a, d);
+      }
+    }
   }
 
   overlaps(a, b) {
@@ -205,44 +222,44 @@ class FightScene extends Phaser.Scene {
   // TRUE speed, so a blocked runner really stops instead of running in place
   // — the gait, being a function of real speed, then falls to idle on its
   // own; wallContact also freezes the stride phase to kill 1-frame lag).
+  // Pairwise over the roster: O(n^2) but trivial below ~50 bodies; a spatial
+  // grid is the answer if crowds ever get that big.
   separateBodies() {
-    const a = this.p1.sprite, b = this.p2.sprite;
-    const dx = b.x - a.x;
-    const overlap = CFG.body.width - Math.abs(dx);
-    const vertical = Math.abs(a.y - b.y) < CFG.body.height;
-    // STICKY touch (1.5px tolerance): a pinned fighter sits exactly at body
-    // width after push-apart. If we required vx>0 into the wall, zeroing vx
-    // would clear the flag next frame and accel would restart = stutter-
-    // moonwalk. Press-intent (held direction key) keeps the wall true while
-    // the player leans on the opponent.
-    // 3px slop: push-apart equilibrium sits ~1px past true contact; requiring
-    // exact overlap made the flag flicker and accel restart each frame (the
-    // vx 50 = one accel step stutter).
-    const touching = overlap > -3 && vertical;
-    const dir = dx >= 0 ? 1 : -1;
-    const in1 = (this.lastIn && this.lastIn.p1) || {};
-    const in2 = (this.lastIn && this.lastIn.p2) || {};
-
-    if (touching) {
-      this.p1.wallContact = in1.heldDir === dir;   // p1 pressing toward p2
-      this.p1.wallBlockDir = dir;
-      this.p2.wallContact = in2.heldDir === -dir;  // p2 pressing toward p1
-      this.p2.wallBlockDir = -dir;
-      if (overlap > 0) {
-        const push = overlap / 2 + 0.5;
-        // Momentum-preserving separation (never body.reset, which zeroes vx):
-        a.x -= dir * push;
-        b.x += dir * push;
-        // Kill only velocity driving INTO the opponent; knockback pointing
-        // away, dash-aways and jukes survive untouched.
-        if (dir * a.body.velocity.x > 0) a.body.setVelocityX(0);
-        if (-dir * b.body.velocity.x > 0) b.body.setVelocityX(0);
-        a.body.updateFromGameObject();
-        b.body.updateFromGameObject();
+    const fs = this.fighters;
+    const intent = (f) => (f.inputKey && this.lastIn[f.inputKey]) || (f.aiIn) || {};
+    for (const f of fs) { f.wallContact = false; f.wallBlockDir = 0; }
+    for (let i = 0; i < fs.length; i++) {
+      if (fs[i].dead) continue;
+      for (let j = i + 1; j < fs.length; j++) {
+        if (fs[j].dead) continue;
+        const a = fs[i].sprite, b = fs[j].sprite;
+        const dx = b.x - a.x;
+        const overlap = CFG.body.width - Math.abs(dx);
+        const vertical = Math.abs(a.y - b.y) < CFG.body.height;
+        // STICKY touch (3px slop — push-apart equilibrium sits ~1px past
+        // true contact; exact overlap flickered the flag and restart-accel
+        // stuttered). Press-intent keeps the wall true while leaning.
+        const touching = overlap > -3 && vertical;
+        const dir = dx >= 0 ? 1 : -1;
+        const inA = intent(fs[i]), inB = intent(fs[j]);
+        if (touching) {
+          // Accumulate OR: pressed by ANYbody counts as wall contact.
+          if (inA.heldDir === dir)  { fs[i].wallContact = true; fs[i].wallBlockDir = dir; }
+          if (inB.heldDir === -dir) { fs[j].wallContact = true; fs[j].wallBlockDir = -dir; }
+          if (overlap > 0) {
+            const push = overlap / 2 + 0.5;
+            // Momentum-preserving separation (never body.reset, which zeroes vx):
+            a.x -= dir * push;
+            b.x += dir * push;
+            // Kill only velocity driving INTO the other; knockback pointing
+            // away, dash-aways and jukes survive untouched.
+            if (dir * a.body.velocity.x > 0) a.body.setVelocityX(0);
+            if (-dir * b.body.velocity.x > 0) b.body.setVelocityX(0);
+            a.body.updateFromGameObject();
+            b.body.updateFromGameObject();
+          }
+        }
       }
-    } else {
-      this.p1.wallContact = false; this.p1.wallBlockDir = 0;
-      this.p2.wallContact = false; this.p2.wallBlockDir = 0;
     }
   }
 
@@ -296,8 +313,7 @@ class FightScene extends Phaser.Scene {
   }
 
   renderAll() {
-    this.p1.render();
-    this.p2.render();
+    for (const f of this.fighters) { if (!f.dead) f.render(); }
     this.updateCamera();
 
     // HUD health bars.

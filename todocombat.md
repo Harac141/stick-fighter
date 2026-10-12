@@ -2,7 +2,8 @@
 
 Main game = carving through mooks. Duel format stays as the demo / boss-battle shell.
 
-[ ] fighters array refactor: replace hardcoded sc.p1/sc.p2 with a list; resolveHits loops attack-box x every other fighter (hit-once per swing); separateBodies goes pairwise. Duel must behave byte-identically after.
+[x] fighters array refactor: replace hardcoded sc.p1/sc.p2 with a list; resolveHits loops attack-box x every other fighter (hit-once per swing); separateBodies goes pairwise. Duel must behave byte-identically after.
+    -> Done. scene.fighters roster; players keep inputKey 'p1'/'p2' (keyboard slots), AI fighters carry f.aiIn (same dict shape). resolveHits/separateBodies/renderAll loop the roster; dead flag (skip sim/hit/separate/render). Audited: p1/p2 keyboard both 250 vx, jab 100->94, real pin vx0+wall+idle+pinned-jab-lands, injected 3rd body: pairwise pin equilibrium gap 44, jab lands through roster loop, dead body passed through. One-hit-per-swing is GLOBAL (one target per swing) — revisit for multi-target heavies.
 [ ] Mook AI v0: fabricate the same input dict the keyboard makes (Fighter.update takes it blind) — approach/circle/attack/recover state machine with reaction delay + skill knobs. Spawn ~6 in a wide arena, telegraphed jabs. First carving moment.
 [ ] Mook variants via knobs first (reaction delay, aggression, dash-usage), dedicated movesets only if knobs get boring. Boss = mook knobs maxed + custom move.
 [ ] Weapons (chair/pipe/etc.) as attack-data swaps — reach/frame-data, still procedural drawing.

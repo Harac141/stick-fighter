@@ -110,6 +110,7 @@ class Fighter {
     // ---- State ----
     this.state = 'idle';       // idle|run|jump|fall|dash|attack|hurt
     this.health = 100;
+    this.dead = false;       // KO'd: sim skips (render/separate/hit). Mook death pipeline sets this (ragdoll TODO).
     this.animTime = 0;         // seconds, drives idle bob
     this.cyclePhase = 0;       // 0..1 gait phase, advanced by ACTUAL speed (no foot slip)
     this.wallContact = false;  // scene sets true when body-blocked by opponent
