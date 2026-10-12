@@ -580,26 +580,33 @@ class Fighter {
     // to swing 180deg across the landing blend.
     const lean = Math.max(-1, Math.min(1, (vy0 || 0) / 640));
     const dirX0 = Math.sign(v.x || -this.facing) || 1;
-    const headWorld = lean > 0.15 ? dirX0
-                    : lean < -0.15 ? -dirX0
+    // Some land the OTHER way (user): 25% chance to toss-over — an uppercut
+    // victim that somersaults onto their face, a spiked mook that bounces
+    // onto its back. Minority so the finisher still usually reads right;
+    // still decided ONCE at death (never re-flips mid-blend).
+    const flip = Math.random() < 0.25;
+    const headWorld = lean > 0.15 ? (flip ? -dirX0 : dirX0)
+                    : lean < -0.15 ? (flip ? dirX0 : -dirX0)
                     : (Math.random() < 0.5 ? dirX0 : -dirX0);
     const fling = this.facing * (2 + Math.random() * 3);
     this.ragdoll = {
       t: 0, frames: 0, alpha: 1, settled: false, freeze: null, restLeft: 0, gnd: false,
       hipY: this.sprite.y + 10,   // drawn pivot; ragStep owns it (flight rides sprite, blend sinks it)
-      sprawl: null, sprawlDone: false, vy0, lean, headWorld,
+      sprawl: null, sprawlDone: false, vy0, lean, headWorld, flip,
       torso: { th: this.facing * headWorld * (0.25 + Math.random() * 0.35), thv: fling },
       legA:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), bend: 0 },
       legB:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), bend: 0 },
       armA:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9) },
       armB:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9) },
     };
-    // Meteor spikes: skip the pop, slam straight down (guaranteed faceplant).
+    // Meteor spikes: skip the pop, slam straight down (default faceplant,
+    // still honoring the death-time toss-over flip).
     if (hb && hb.meteor) {
       v.y = Math.max(v.y, 420);
       const rd0 = this.ragdoll;
+      const d = Math.sign(v.x || -this.facing) || 1;
       rd0.vy0 = v.y; rd0.lean = 1;
-      rd0.headWorld = Math.sign(v.x || -this.facing) || 1;
+      rd0.headWorld = rd0.flip ? -d : d;
       rd0.torso.th = this.facing * rd0.headWorld * 0.4;
       rd0.torso.thv = this.facing * 6;
     }
