@@ -8,10 +8,39 @@
 // mook) and are HELD between refreshes — no per-frame optimal play, which is
 // what makes mooks read as clumsy opponents instead of bots.
 
+// ---- Engagement queue ------------------------------------------------------
+// The "Bruce Lee crowd": a fight is a QUEUE, not a swarm. Only `slots` mooks
+// may close and swing at once; everyone else holds an orbit ring around the
+// player, jostling, waiting their turn. Not how a real mob behaves — it's how
+// a mob BEHAVES ON SCREEN, and it's what makes 1v6 feel like carving instead
+// of being crushed by a wall of bodies.
+class EngagementManager {
+  constructor(opts = {}) {
+    this.k = Object.assign({
+      slots: 1,          // concurrent attackers (1 = pure one-at-a-time)
+      orbitMin: 175,     // non-holders hold this band around the player...
+      orbitMax: 265,     // ...so the crowd reads as a crowd, not a pile
+      handoffCool: 28,   // frames before the next challenger may take a slot
+      maxHold: 200,      // no single goon hogs the slot forever
+      stunGiveup: 12,    // stunned this long -> surrender the slot
+    }, opts);
+    this.holders = new Set();
+    this.cool = 0;
+  }
+  holding(ai) { return this.holders.has(ai); }
+  claim(ai) { if (this.cool > 0 || this.holders.size >= this.k.slots) return false;
+              this.holders.add(ai); ai.holdT = 0; return true; }
+  release(ai) { if (this.holders.delete(ai)) { ai.holdT = 0; this.cool = this.k.handoffCool; } }
+  tick() { if (this.cool > 0) this.cool--; }
+}
+
 class MookAI {
   constructor(f, opts = {}) {
     this.f = f;
+    this.mgr = opts.mgr || null;     // shared EngagementManager (null = free-for-all)
+    this.holdT = 0;                  // frames holding the attack slot
     this.k = Object.assign({
+      hp: 12,                // cannon fodder: 2 jabs (or a heavy+1). Elites later = knobs up.
       react: 14,           // frames between decision refreshes (higher = dumber)
       aggression: 0.55,    // chance to commit when in range (per decision)
       dashChance: 0.35,    // chance to dash-close when far
@@ -21,6 +50,8 @@ class MookAI {
       range: 62,           // preferred center-to-center striking distance
       backoffFrames: 22,   // post-attack breathing room (waves need gaps)
     }, opts);
+    delete this.k.mgr;
+    f.health = this.k.hp;
     // Per-mook personality: jitter the knobs so a pack never moves in lockstep.
     this.k.range += (Math.random() * 2 - 1) * 12;
     this.k.react += (Math.random() * 10 | 0) - 5;
@@ -32,6 +63,7 @@ class MookAI {
     this.stT = -(30 + (Math.random() * 150 | 0));
     this.sustainT = 0;                              // dash-hold timer
     this.pulse = null;                              // one-frame attack pulse
+    this.committed = false;                         // holder has actually swung
     f.ai = this;
   }
 
@@ -49,13 +81,34 @@ class MookAI {
   think(fighters) {
     const f = this.f;
     const inp = (f.aiIn = {});   // rebuilt every step; falsy = key up
-    if (f.dead || f.hitstun > 0) return;   // stunned: hands off the controls
+    if (f.dead) { if (this.mgr) this.mgr.release(this); return; }
+    if (f.hitstun > 0) {
+      // Long-stunned holder surrenders the slot so the queue keeps moving.
+      if (this.mgr && this.mgr.holding(this)) {
+        this.stunT = (this.stunT || 0) + 1;
+        if (this.stunT > this.mgr.k.stunGiveup) this.mgr.release(this);
+      }
+      return;   // stunned: hands off the controls
+    }
+    this.stunT = 0;
 
     const t = this.pickTarget(fighters);
     if (!t) return;
     const dx = t.x - f.x;
     const adx = Math.abs(dx);
     const dir = dx >= 0 ? 1 : -1;
+
+    // ---- Engagement queue bookkeeping ----
+    const holding = !this.mgr || this.mgr.holding(this);
+    if (this.mgr && this.mgr.holding(this)) {
+      this.holdT++;
+      // No hogging: too long in the slot, or the target ran far -> re-queue.
+      if (this.holdT > this.mgr.k.maxHold || adx > 460) {
+        this.mgr.release(this);
+        this.st = 'approach'; this.stT = 0;
+        this.dec = { mode: 'orbit' };
+      }
+    }
 
     // ---- State transitions (checked on decision ticks, held between) ----
     this.stT++;   // frames-in-state advances EVERY step (not per decision tick)
@@ -65,15 +118,17 @@ class MookAI {
         case 'wait':
           if (this.stT > 0) { this.st = 'approach'; this.stT = 0; }
           break;
-        case 'approach':
-          if (adx <= this.k.range + 12) {
-            if (Math.random() < this.k.aggression) {
-              this.st = 'attack'; this.stT = 0; this.pulse = null;
-              this.dec = { mode: 'attack' };          // apply-switch needs this
-            } else if (Math.random() < this.k.circleChance) {
-              this.st = 'circle'; this.stT = 0;
-              this.dec = { mode: 'band', dir };
-            }
+        case 'approach': {
+          // Queue-first: a free slot + aggression commits from anywhere (the
+          // attack state itself closes the gap). No slot -> hold the ring.
+          const wantAttack = Math.random() < this.k.aggression;
+          if (wantAttack && (!this.mgr || (this.mgr.claim(this)))) {
+            this.st = 'attack'; this.stT = 0; this.pulse = null;
+            this.committed = false;                    // hasn't swung yet
+            this.dec = { mode: 'attack' };
+          } else if (this.mgr) {
+            this.st = 'circle'; this.stT = 0;
+            this.dec = { mode: 'orbit' };
           } else if (adx > 230 && Math.random() < this.k.dashChance &&
                      f.dashCooldown === 0 && f.onGround) {
             this.dec = { mode: 'dash', dir };
@@ -84,16 +139,22 @@ class MookAI {
             this.dec = { mode: 'close', dir };
           }
           break;
+        }
         case 'circle':   // mill in the striking band; lulls make crowds readable
           if (this.stT > 90 || Math.random() < 0.2) { this.st = 'approach'; this.stT = 0; }
           break;
         case 'attack':
-          if (!f.currentAttack && f.attackCooldown === 0) {
-            // Attack finished -> step back for a breather (waves need gaps).
+          if (this.committed && !f.currentAttack && f.attackCooldown === 0) {
+            // A real swing happened and finished -> give up the slot (the
+            // queue's handoff cooldown paces who comes in next). Without the
+            // committed gate a fresh claimant "finishes" an attack it never
+            // started and releases instantly (nobody ever lands).
+            if (this.mgr) this.mgr.release(this);
             this.st = 'back'; this.stT = 0;
             this.dec = { mode: 'back', dir };
-          } else if (this.stT > 90) {
+          } else if (this.stT > 130) {
             // Wedged (can't reach: body-blocked, target dodged): re-think.
+            if (this.mgr) this.mgr.release(this);
             this.st = 'approach'; this.stT = 0;
             this.dec = { mode: 'close', dir };
           }
@@ -122,6 +183,11 @@ class MookAI {
         if (adx > this.k.range + 18) press(dir);
         else if (adx < this.k.range - 18) press(-dir);
         break;
+      case 'orbit':  // queued crowd: hold the spectator ring, face the fight
+        if (!f.airborne) inp.heldDir = dir;   // press-intent toward target for wall logic
+        if (this.mgr && adx > this.mgr.k.orbitMax) press(dir);
+        else if (this.mgr && adx < this.mgr.k.orbitMin) press(-dir);
+        break;
       case 'dash':
         press(this.dec.dir);
         if (f.dashCooldown === 0 && f.onGround && f.state !== 'dash') {
@@ -140,7 +206,7 @@ class MookAI {
       case 'attack':
         // Keep the approach honest while facing settles; pulse fires once.
         if (f.facing !== dir || adx > this.k.range) press(dir);
-        if (this.pulse) { inp[this.pulse] = true; this.pulse = null; }
+        if (this.pulse) { inp[this.pulse] = true; this.pulse = null; this.committed = true; }
         break;
       case 'wait': break;
     }

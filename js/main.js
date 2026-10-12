@@ -177,11 +177,17 @@ class FightScene extends Phaser.Scene {
   // A mook IS a player fighter with a MookAI attached: same class, same
   // moveset, same physics. Difficulty = knobs. Spawns on the right half.
   spawnMooks(n) {
+    // Engagement queue (Bruce Lee one-at-a-time). OFF by DEFAULT: the queue
+    // currently wedges (holder stalls ~320px, nothing lands — see
+    // todocombat). Free-for-all is the known-good pack until that's fixed.
+    // Test the queue with ?queue=1.
+    const wantQueue = new URLSearchParams(location.search).get('queue') === '1';
+    this.eng = wantQueue ? new EngagementManager({ slots: 1 }) : null;
     for (let i = 0; i < n; i++) {
       const x = Math.min(this.levelWidth - 80,
         this.levelWidth * 0.62 + i * 60 + (Math.random() * 40 - 20));
       const m = new Fighter(this, x, this.groundY, -1, 0xff8f5a);
-      new MookAI(m, {});
+      new MookAI(m, { mgr: this.eng });
       this.fighters.push(m);
     }
   }
@@ -198,6 +204,7 @@ class FightScene extends Phaser.Scene {
       const inp = f.inputKey ? this.lastIn[f.inputKey] : (f.aiIn || {});
       f.update(inp);
     }
+    if (this.eng) this.eng.tick();   // handoff cooldown pace
     this.resolveHits();
     this.separateBodies();
   }
