@@ -593,13 +593,23 @@ class Fighter {
         lean = 0.3;   // sprint base; burst leap blends over it in the gait block
         break;
       case 'jump':
-        lean = 0.07;
-        footF = P(f * 10, feetY - 26); footB = P(-f * 12, feetY - 10);
+      case 'fall': {
+        // ONE continuous airborne pose parameterised by vertical velocity, so
+        // there is no jump->fall POPE at the apex. t=0 rising (tuck: knees up,
+        // compact), t=1 falling (reach: legs extend to land). Symmetric |vy|
+        // heights give t<0.5 on the way up, t>0.5 coming down — the natural
+        // asymmetry that sells gravity. Smoothstep for a soft apex dwell.
+        const vy = this.body ? this.body.velocity.y : 0;
+        let t = (vy - CFG.jump.velocity) / (-2 * CFG.jump.velocity); // vy -640->0, +640->1
+        t = Math.max(0, Math.min(1, t));
+        t = t * t * (3 - 2 * t);
+        const lerp = (a, b) => a + (b - a) * t;
+        lean = lerp(0.07, 0.05);
+        footF = P(f * lerp(10, 8),   feetY - lerp(26, 4));   // front knee tucks->down
+        footB = P(f * lerp(-12, -18), feetY - lerp(10, 20));  // rear foot kicks back
+        this._airT = t;   // arms read the same parameter (see ARM layer)
         break;
-      case 'fall':
-        lean = 0.05;
-        footF = P(f * 8, feetY - 6); footB = P(-f * 16, feetY - 18);
-        break;
+      }
       case 'attack': {
         const atk = CFG.attacks[this.currentAttack] || CFG.attacks.jab;
         const fr = this.attackFrame;
@@ -707,10 +717,13 @@ class Fighter {
         handF = P(reach * (1 - k) + f * (12 + os), chestY);
         handB = P(f * (4 + os * 0.5), feetY - 64);
       }
-    } else if (this.state === 'jump') {
-      handF = P(f * 14, feetY - 66); handB = P(f * 2, feetY - 68);
-    } else if (this.state === 'fall') {
-      handF = P(f * 12, feetY - 72); handB = P(-f * 8, feetY - 70);
+    } else if (this.state === 'jump' || this.state === 'fall') {
+      // arms follow the SAME airborne parameter as the legs (rise: guard up;
+      // fall: arms lift/back to brace), no cut at the apex.
+      const t = this._airT ?? 0.5;
+      const lerp = (a, b) => a + (b - a) * t;
+      handF = P(f * lerp(14, 12), feetY - lerp(66, 74));
+      handB = P(f * lerp(2, -10), feetY - lerp(68, 72));
     } else if (this.state === 'hurt') {
       handF = P(f * 6, feetY - 70); handB = P(-f * 4, feetY - 68);
     } else if (gaiting) {
