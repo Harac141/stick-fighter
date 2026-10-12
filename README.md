@@ -35,10 +35,12 @@ Duel demo (2P on one keyboard, no mooks): P2 = arrows + `/` dash + `,` jab +
 | `?width=W`   | scrolling level width in px (1280–8192), camera follows |
 | `?follow=1`  | follow-cam on P1 with facing lookahead (else duel midpoint cam) |
 | `?queue=1`   | Bruce Lee engagement queue for mooks (experimental) |
+| `?level=X`   | load an authored level: `dojo`, `rooftop`, `warehouse` (js/levels.js). Level supplies width/sky/floors/platforms/spawns; forces follow-cam. Pits: player pays 25hp + repositions, mooks die. DOWN+JUMP drops through a platform. |
 
 Examples:
 - Duel: `/`
 - Mook arena: `/?width=4000&follow=1&mooks=6`
+- Levels: `/?level=rooftop`, `/?level=warehouse`, `/?level=dojo`
 
 ## Run locally
 
