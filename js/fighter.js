@@ -57,6 +57,20 @@ const CFG = {
   strideWalk:   112,   // px per cycle: ~2.2 steps/s at walk speed (was 2.7)
   walkSlip:     0.85,  // fraction of true planting (1.0 = zero slip)
   strideSprint: 150,   // px per cycle at sprint cadence (dash hold phase)
+  // Ragdoll (fake physics — see Fighter.ragStep). Joints are damped pendulums;
+  // the corpse's arcade body does the ballistic flight for free.
+  ragdoll: {
+    bounces: 1,           // floor contacts before settling (meteor kills spend it)
+    bounceMinVy: 190,     // impact speed needed to bounce
+    bounceMaxVy: 300,     // rebound speed ceiling
+    airK: 26, airC: 3.5,        // limb pendulum while airborne (underdamped=whips)
+    groundK: 120, groundC: 12,  // ...and once grounded (settles fast)
+    torsoK: 60, torsoC: 12,     // torso springs flat on the floor
+    flailMaxFrames: 240,        // safety: force-freeze anything that never settles
+    restFrames: 90,             // frozen "still image" hold before fading out
+    fadeFrames: 45,
+    maxLive: 8,                 // simultaneous airborne flailers (oldest force-freezes)
+  },
   // Attacks: startup, active, recovery in frames; knockback vx/vy.
   attacks: {
     jab: {
@@ -164,7 +178,9 @@ class Fighter {
     // ---- State ----
     this.state = 'idle';       // idle|run|jump|fall|dash|attack|hurt
     this.health = 100;
-    this.dead = false;       // KO'd: sim skips (render/separate/hit). Mook death pipeline sets this (ragdoll TODO).
+    this.dead = false;       // KO'd: sim skips (render/separate/hit). ragdoll object drives the corpse.
+    this.ragdoll = null;     // fake-physics corpse state (see ragStep); set by ko()
+    this.gone = false;       // corpse despawned; scene filters it out of the roster
     this.animTime = 0;         // seconds, drives idle bob
     this.cyclePhase = 0;       // 0..1 gait phase, advanced by ACTUAL speed (no foot slip)
     this.wallContact = false;  // scene sets true when body-blocked by opponent
@@ -518,15 +534,180 @@ class Fighter {
     };
   }
 
-  // KO: sim/render skip via dead flag (roster loops). Proper ragdoll fly-out
-  // is a separate TODO; v0 keeps the body pinned in the hurt pose at 0 hp.
-  ko() {
+  // KO: sim skips via dead flag; the ragdoll object drives the corpse until
+  // it fades and despawns.
+  // Fake physics (no engine — Star Fetchers/YOMI approach): the corpse's
+  // arcade BODY does the ballistic flight (we already pay for it), and each
+  // joint is a damped pendulum toward its "at rest" angle. Joints carry
+  // angular velocity so a launch WHIPS the limbs; on impact stiffer ground
+  // springs slam them toward splayed sprawl. Zero extra bodies/joints, a
+  // handful of arithmetic ops per corpse per step, and ZERO once settled —
+  // the frozen "still image" phase integrates nothing at all.
+  ko(hb) {
     this.dead = true;
     this.currentAttack = null;
     this.hitboxes.length = 0;
-    this.gfx.clear();
-    this.body.setVelocityX(0);
+    this.state = 'hurt';
     if (this.ai) this.aiIn = {};   // brain hands off permanently
+    const K = CFG.ragdoll;
+    const v = this.body.velocity;
+    const rnd = (a) => (Math.random() * 2 - 1) * a;
+    // Launch feel: grounded deaths get an upward pop (a KO should not just
+    // slide over); airborne deaths keep whatever the killing blow gave them.
+    if (this.onGround) v.y = -260 - Math.random() * 130;
+    // Hand physics to ragStep: with the arcade body DISABLED, world.step
+    // skips it entirely — ragStep's manual integration is the only mover
+    // (no gravity double-apply) and settled corpses touch zero physics.
+    this.body.enable = false;
+    // Hard hits (big downward knock or a meteor spike) earn floor bounces.
+    const bounces = hb && (hb.meteor || Math.abs(hb.knock.y) > 300) ? (hb.meteor ? 2 : 1) : 0;
+    // Live-flailer cap: if too many corpses are mid-air, force-freeze the
+    // oldest (settled corpses cost nothing, so only the flailing cost).
+    const live = this.scene.fighters.filter((f) => f.ragdoll && !f.ragdoll.settled && !f.gone);
+    while (live.length >= K.maxLive) live.shift().forceFreeze();
+    // Joint angles: torso 0 = upright (topples to ±90 = flat); limbs 0 = hang
+    // straight down. Angular velocities seeded from the knock direction so
+    // the corpse's limbs trail the blow.
+    const fling = this.facing * (2 + Math.random() * 3);
+    this.ragdoll = {
+      t: 0, frames: 0, alpha: 1, settled: false, freeze: null, restLeft: 0, bounces,
+      torso: { th: this.facing * (0.30 + Math.random() * 0.45), thv: fling, th0: this.facing * (0.9 + Math.random() * 0.5) },
+      legA:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), rest: rnd(0.7) },
+      legB:  { th: rnd(0.5), thv: v.x * 0.004 + rnd(7), rest: rnd(0.7) },
+      armA:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9), rest: rnd(1.0) },
+      armB:  { th: rnd(0.7), thv: v.x * 0.005 + rnd(9), rest: rnd(1.0) },
+    };
+    // Meteor spikes: skip the pop, slam straight down.
+    if (hb && hb.meteor) { v.y = Math.max(v.y, 420); this.ragdoll.torso.thv = this.facing * 6; }
+  }
+
+  // Fake-physics ragdoll (no physics engine — Star Fetchers/YOMI approach):
+  // the corpse's arcade BODY does the ballistic flight (we already pay for
+  // it), and each joint is a damped pendulum toward its "at rest" angle.
+  // Joints carry angular velocity so a launch WHIPS the limbs; on impact the
+  // stiffer ground springs slam them toward splayed-out sprawl. Zero extra
+  // bodies, zero joint constraints, ~6 trig calls per corpse per sim step.
+  ragStep(dt) {
+    const rd = this.ragdoll, K = CFG.ragdoll;
+    // FREEZE = zero physics: the frozen "still image" only ticks a fade
+    // clock. (This is why thousands of corpses cost nothing until they fade.)
+    if (rd.settled) {
+      rd.restLeft--;
+      if (rd.restLeft <= K.fadeFrames) rd.alpha = Math.max(0, rd.restLeft / K.fadeFrames);
+      if (rd.restLeft <= 0) this.gone = true;
+      return;
+    }
+    const v = this.body.velocity;
+    rd.t += dt;
+    rd.frames++;
+
+    // Ballistic body — the ONLY integrator now: ko() disabled the arcade
+    // body, so arcade's world.step skips it (otherwise gravity double-applies).
+    v.y += CFG.gravity * dt;
+    v.x *= (1 - 1.6 * dt);                       // air drag on the corpse
+    this.sprite.x += v.x * dt;
+    this.sprite.y += v.y * dt;
+    // World bounds: walls catch flying bodies (ragdoll keeps wall-pin energy).
+    const hw = CFG.body.width / 2;
+    if (this.sprite.x < hw) { this.sprite.x = hw; v.x = Math.abs(v.x) * 0.35; }
+    else if (this.sprite.x > this.scene.levelWidth - hw) {
+      this.sprite.x = this.scene.levelWidth - hw; v.x = -Math.abs(v.x) * 0.35;
+    }
+
+    // Floor. (ragdoll-local ground flag: `onGround` reads arcade blocked.down,
+    // which never updates while the body is disabled.)
+    const centerY = this.scene.groundY - CFG.body.height / 2;
+    const onGnd = this.sprite.y >= centerY - 0.5;
+    if (onGnd) {
+      this.sprite.y = centerY;
+      if (v.y > K.bounceMinVy && rd.bounces > 0) {
+        rd.bounces--;
+        v.y = -Math.min(v.y, K.bounceMaxVy) * 0.45;   // hard deaths bounce
+        // Impact whips the limbs harder (impulse ~ impact speed).
+        const kick = Math.min(v.y * -1, 400) * 0.02;
+        rd.legA.thv += (Math.random() < 0.5 ? 1 : -1) * kick;
+        rd.legB.thv += (Math.random() < 0.5 ? 1 : -1) * kick;
+        rd.armA.thv += (Math.random() < 0.5 ? 1 : -1) * kick * 0.8;
+        rd.armB.thv += (Math.random() < 0.5 ? 1 : -1) * kick * 0.8;
+      } else if (v.y > 0) {
+        v.y = 0;
+      }
+      v.x *= (1 - 6 * dt);                            // ground scrape
+    }
+
+    // Joint springs: theta'' = -K(theta - rest) - C*theta'. Underdamped in
+    // air (limbs whip), stiff once grounded (sprawl fast, then hold).
+    const grounded = onGnd && v.y === 0;
+    const set = (j, rest, kv, cv) => {
+      j.thv += (-kv * (j.th - rest) - cv * j.thv) * dt;
+      j.th += j.thv * dt;
+    };
+    const kvK = grounded ? K.groundK : K.airK, cvK = grounded ? K.groundC : K.airC;
+    set(rd.torso, grounded ? 0 : rd.torso.th0, K.torsoK * (grounded ? 1 : 0.35), K.torsoC);
+    set(rd.legA, rd.legA.rest, kvK, cvK);
+    set(rd.legB, rd.legB.rest, kvK, cvK);
+    set(rd.armA, rd.armA.rest, kvK, cvK);
+    set(rd.armB, rd.armB.rest, kvK, cvK);
+
+    // Settle -> FREEZE (the user's "still image": zero compute, replay the
+    // snapshot taken here) -> fade -> despawn (fade clock lives in the
+    // settled early-return above).
+    const energy = Math.abs(rd.torso.thv) + Math.abs(rd.legA.thv) + Math.abs(rd.legB.thv)
+                 + Math.abs(rd.armA.thv) + Math.abs(rd.armB.thv)
+                 + Math.abs(v.x) / 100 + (onGnd ? 0 : Math.abs(v.y) / 400);
+    if ((grounded && energy < 0.35) || rd.frames > K.flailMaxFrames) this.forceFreeze();
+  }
+
+  // Joint-angle FK: skeleton points straight FROM the spring state (the
+  // ragdoll IS the pose generator — no computePose/blend/IK involved).
+  // Rendered every flail frame and captured ONCE at freeze time.
+  _ragPoints() {
+    const rd = this.ragdoll, f = this.facing;
+    const hip = { x: this.sprite.x, y: this.sprite.y + 10 };  // pivot low-center
+    // Torso up-vector rotated by topple angle T (T=0 upright, ±90deg flat).
+    const T = rd.torso.th;
+    const ux = Math.sin(T) * f, uy = -Math.cos(T);
+    const neck = { x: hip.x + ux * 26, y: hip.y + uy * 26 };
+    const head = { x: neck.x + ux * 14, y: neck.y + uy * 14 };
+    // Pendulum segments: angle measured from straight-down, mirrored by facing.
+    const seg = (ox, oy, ang, len) => ({ x: ox + Math.sin(ang) * len, y: oy + Math.cos(ang) * len });
+    const elbowA = seg(neck.x, neck.y, rd.armA.th * f, 19);
+    const handA = seg(elbowA.x, elbowA.y, rd.armA.th * 1.35 * f, 18);
+    const elbowB = seg(neck.x, neck.y, rd.armB.th * f, 19);
+    const handB = seg(elbowB.x, elbowB.y, rd.armB.th * 1.35 * f, 18);
+    const kneeA = seg(hip.x, hip.y, rd.legA.th * f, 24);
+    const footA = seg(kneeA.x, kneeA.y, rd.legA.th * 0.7 * f, 24);
+    const kneeB = seg(hip.x, hip.y, rd.legB.th * f, 24);
+    const footB = seg(kneeB.x, kneeB.y, rd.legB.th * 0.7 * f, 24);
+    return { head, neck, hip, elbowA, handA, elbowB, handB, kneeA, footA, kneeB, footB };
+  }
+
+  forceFreeze() {
+    const rd = this.ragdoll;
+    rd.settled = true;
+    rd.freeze = this._ragPoints();   // snapshot of the sprawl, not the death pose
+    rd.restLeft = CFG.ragdoll.restFrames;
+  }
+
+  // Draw the corpse. Settled: replay the frozen snapshot (no pose compute at
+  // all). Flailing: FK from the live joint angles.
+  renderRagdoll() {
+    const rd = this.ragdoll;
+    if (!rd) return;
+    const p = (rd.settled && rd.freeze) ? rd.freeze : this._ragPoints();
+    const g = this.gfx;
+    g.clear();
+    g.lineStyle(3.5, this.color, rd.alpha);
+    g.strokeCircle(p.head.x, p.head.y, 12);
+    g.lineBetween(p.neck.x, p.neck.y, p.hip.x, p.hip.y);
+    g.lineBetween(p.neck.x, p.neck.y, p.elbowA.x, p.elbowA.y);
+    g.lineBetween(p.elbowA.x, p.elbowA.y, p.handA.x, p.handA.y);
+    g.lineBetween(p.neck.x, p.neck.y, p.elbowB.x, p.elbowB.y);
+    g.lineBetween(p.elbowB.x, p.elbowB.y, p.handB.x, p.handB.y);
+    g.lineBetween(p.hip.x, p.hip.y, p.kneeA.x, p.kneeA.y);
+    g.lineBetween(p.kneeA.x, p.kneeA.y, p.footA.x, p.footA.y);
+    g.lineBetween(p.hip.x, p.hip.y, p.kneeB.x, p.kneeB.y);
+    g.lineBetween(p.kneeB.x, p.kneeB.y, p.footB.x, p.footB.y);
   }
 
   // Called by the scene when one of this fighter's hitboxes overlaps an
@@ -536,7 +717,6 @@ class Fighter {
     // Interrupt a dash BEFORE knockback is applied (endDash clamps speed).
     if (this.state === 'dash') this.endDash();
     this.health = Math.max(0, this.health - hb.damage);
-    if (this.health === 0 && !this.dead) this.ko();   // mooks KO; players too (duel KO later)
     this.hitstun = hb.knock.hitstun;
     this.facing = -fromFacing; // face the attacker
     this.body.setVelocityX(fromFacing * hb.knock.x);
@@ -546,6 +726,8 @@ class Fighter {
     this.state = 'hurt';
     // Meteor spike: slam down, then a bounce + scramble delay on landing.
     if (hb.meteor) this.meteorPending = true;
+    // KO AFTER knockback lands — the ragdoll inherits the corpse's velocity.
+    if (this.health === 0 && !this.dead) this.ko(hb);   // mooks KO; players too (duel KO later)
   }
 
   // ---- Rendering ----------------------------------------------------------

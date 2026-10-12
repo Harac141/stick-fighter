@@ -207,7 +207,7 @@ class FightScene extends Phaser.Scene {
     const i2 = this.sampleInput('p2');
     this.lastIn = { p1: i1, p2: i2 };   // press-intent for separateBodies
     for (const f of this.fighters) {
-      if (f.dead) continue;
+      if (f.dead) { if (f.ragdoll && !f.gone) f.ragStep(SIM_STEP); continue; }
       if (f.ai) f.ai.think(this.fighters);   // AI writes f.aiIn for this step
       // Player fighters read their sampled input; AI fighters (mooks) carry
       // their own fabricated input dict on f.aiIn (same shape as keyboard).
@@ -217,6 +217,14 @@ class FightScene extends Phaser.Scene {
     if (this.eng) this.eng.tick();   // handoff cooldown pace
     this.resolveHits();
     this.separateBodies();
+    // Reap despawned corpses. Cost note: settled ragdolls integrate NOTHING
+    // (frozen still image) and the flailer cap bounds simultaneous live ones,
+    // so thousands of accumulated corpses stay ~free until they fade.
+    this.fighters = this.fighters.filter((f) => {
+      if (!f.gone) return true;
+      f.destroy();
+      return false;
+    });
   }
 
   resolveHits() {
@@ -376,7 +384,7 @@ class FightScene extends Phaser.Scene {
   }
 
   renderAll() {
-    for (const f of this.fighters) { if (!f.dead) f.render(); }
+    for (const f of this.fighters) { if (!f.dead) f.render(); else if (f.ragdoll) f.renderRagdoll(); }
     this.updateCamera();
 
     // HUD health bars.
