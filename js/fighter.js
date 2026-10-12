@@ -630,20 +630,24 @@ class Fighter {
     if (onGnd) {
       this.sprite.y = centerY;
       // HARD CONTACT SNAP (user: "don't worry about smooth"): on the contact
-      // frame every joint jumps INSTANTLY to its sprawl angle — no spring
-      // easing. Fall speed adds a directional whip to the sprawl so the
-      // landing is impact-driven, not scripted.
+      // frame every joint jumps INSTANTLY to a LYING pose — no spring easing.
+      // Lying = everything nearly HORIZONTAL (angle from straight-down ~±1.4):
+      // torso flat, legs extended along the floor pointing AWAY from the head
+      // (head ends up on the knock side), arms flopped sideways. The old
+      // down-outward sprawl (±1.15 from vertical) + floor clamp read as the
+      // corpse crawling on hands and knees (user).
       if (v.y > 40) {
         const dirX = Math.sign(v.x || this.facing) || 1;
         const whip = Math.min(v.y, 600) * 0.0022 * dirX;        // rad, impact-scaled
-        rd.torso.th = rd.torso.th0 + whip * 0.5;
+        const f = this.facing;
+        rd.torso.th = dirX * (1.44 + Math.random() * 0.10) * f + whip * 0.2;
         rd.torso.thv = 0;      // grounded springs are off: kill residual spin
                                // or settle-energy never decays (240f timeout)
-        for (const j of [rd.legA, rd.legB, rd.armA, rd.armB]) {
-          const r = (j === rd.armA || j === rd.armB) ? 1.35 : 1.15;   // arms sprawl wider
-          j.th = r * (Math.random() < 0.5 ? -1 : 1) + whip * (0.6 + Math.random() * 0.8);
-          j.thv = 0;
-        }
+        rd.legA.th = -dirX * (1.22 + Math.random() * 0.25) * f;
+        rd.legB.th = -dirX * (1.05 + Math.random() * 0.35) * f;   // one leg less straight
+        rd.armA.th = (Math.random() < 0.5 ? 1 : -1) * (0.95 + Math.random() * 0.5) * f;
+        rd.armB.th = (Math.random() < 0.5 ? 1 : -1) * (0.95 + Math.random() * 0.5) * f;
+        for (const j of [rd.legA, rd.legB, rd.armA, rd.armB]) j.thv = 0;
       }
       if (v.y > K.bounceMinVy && rd.bounces > 0) {
         rd.bounces--;
