@@ -64,12 +64,10 @@ const CFG = {
     bounceMinVy: 190,     // impact speed needed to bounce
     bounceMaxVy: 520,     // rebound speed ceiling (cap impact then restitution)
     airK: 26, airC: 3.5,        // limb pendulum while airborne (underdamped=whips)
-    groundK: 260, groundC: 15,  // ...and once grounded (SNAP to sprawl, not float)
-    torsoK: 60, torsoC: 12,     // torso springs flat on the floor
+    torsoK: 60, torsoC: 12,     // torso pendulum while airborne
     airDrag: 0.12,        // per-second corpse air drag (near-none: momentum!)
-    groundFriction: 3.2,  // per-second slide decay once on the floor
-    limbKick: 0.014,      // limb ang-impulse per px/s of floor impact
-    impactMin: 120,       // impact speed before contact whips limbs at all
+    groundFriction: 8,    // per-second slide decay once on the floor (stop fast)
+    impactMin: 120,       // fall speed before the landing snap widens the sprawl
     flailMaxFrames: 240,        // safety: force-freeze anything that never settles
     restFrames: 90,             // frozen "still image" hold before fading out
     fadeFrames: 45,
@@ -631,19 +629,21 @@ class Fighter {
     const onGnd = this.sprite.y >= centerY - 0.5;
     if (onGnd) {
       this.sprite.y = centerY;
-      // IMPACT (contact frame only: v.y is the pre-clamp fall speed here, and
-      // 0 on rest frames). Whips limbs from the blow — magnitude scales with
-      // impact, direction with the slide — and re-targets each limb to the
-      // angle it WHIPPED to (user: no more slow settle to pre-randomized
-      // poses; where the fall throws a limb is roughly where it stays).
-      if (v.y > K.impactMin) {
-        const kick = Math.min(v.y, 600) * K.limbKick;          // rad/s impulse
-        const dirX = Math.sign(v.x || this.facing);
+      // HARD CONTACT SNAP (user: "don't worry about smooth"): on the contact
+      // frame every joint jumps INSTANTLY to its sprawl angle — no spring
+      // easing. Fall speed adds a directional whip to the sprawl so the
+      // landing is impact-driven, not scripted.
+      if (v.y > 40) {
+        const dirX = Math.sign(v.x || this.facing) || 1;
+        const whip = Math.min(v.y, 600) * 0.0022 * dirX;        // rad, impact-scaled
+        rd.torso.th = rd.torso.th0 + whip * 0.5;
+        rd.torso.thv = 0;      // grounded springs are off: kill residual spin
+                               // or settle-energy never decays (240f timeout)
         for (const j of [rd.legA, rd.legB, rd.armA, rd.armB]) {
-          j.thv += dirX * kick * (0.75 + Math.random() * 0.5);
-          j.restF = Math.max(-1.9, Math.min(1.9, j.th + dirX * kick * 0.06));
+          const r = (j === rd.armA || j === rd.armB) ? 1.35 : 1.15;   // arms sprawl wider
+          j.th = r * (Math.random() < 0.5 ? -1 : 1) + whip * (0.6 + Math.random() * 0.8);
+          j.thv = 0;
         }
-        rd.torso.thv += dirX * kick * 0.5;
       }
       if (v.y > K.bounceMinVy && rd.bounces > 0) {
         rd.bounces--;
@@ -651,27 +651,22 @@ class Fighter {
       } else if (v.y > 0) {
         v.y = 0;
       }
-      v.x *= (1 - K.groundFriction * dt);             // slide, then stop
+      v.x *= (1 - K.groundFriction * dt);             // slide, then stop fast
     }
 
-    // Joint springs: theta'' = -K(theta - rest) - C*theta'. Underdamped in
-    // air (limbs whip); on the ground stiff+damped so the sprawl SNAPS in
-    // behind the impact impulse instead of floating toward it.
+    // Joint springs: ONLY live while airborne — flail on the way down (limbs
+    // whip underdamped), then the ground snap above takes over and freezes
+    // them (thv=0 + grounded flag = joints stop dead, zero smoothing).
     const grounded = onGnd && v.y === 0;
     rd.gnd = grounded;
-    const set = (j, rest, kv, cv) => {
-      j.thv += (-kv * (j.th - rest) - cv * j.thv) * dt;
-      j.th += j.thv * dt;
-    };
-    const kvK = grounded ? K.groundK : K.airK, cvK = grounded ? K.groundC : K.airC;
-    // LIE DOWN (user: corpses sprang back upright on landing — the grounded
-    // torso target was 0 = standing). Torso springs to its fallen angle once
-    // down; limbs sprawl to near-horizontal (restF) instead of hanging (0).
-    set(rd.torso, grounded ? rd.torso.th0 : rd.torso.th0 * 0.55, K.torsoK * (grounded ? 1 : 0.35), K.torsoC);
-    set(rd.legA, grounded ? rd.legA.restF : 0, kvK, cvK);
-    set(rd.legB, grounded ? rd.legB.restF : 0, kvK, cvK);
-    set(rd.armA, grounded ? rd.armA.restF : 0, kvK, cvK);
-    set(rd.armB, grounded ? rd.armB.restF : 0, kvK, cvK);
+    if (!grounded) {
+      const set = (j, rest) => {
+        j.thv += (-K.airK * (j.th - rest) - K.airC * j.thv) * dt;
+        j.th += j.thv * dt;
+      };
+      set(rd.torso, rd.torso.th0 * 0.55);
+      set(rd.legA, 0); set(rd.legB, 0); set(rd.armA, 0); set(rd.armB, 0);
+    }
 
     // Settle -> FREEZE (the user's "still image": zero compute, replay the
     // snapshot taken here) -> fade -> despawn (fade clock lives in the
@@ -708,6 +703,15 @@ class Fighter {
     const footA = seg(kneeA.x, kneeA.y, rd.legA.th * 0.7 * f, 24);
     const kneeB = seg(hip.x, hip.y, rd.legB.th * f, 24);
     const footB = seg(kneeB.x, kneeB.y, rd.legB.th * 0.7 * f, 24);
+    // FLOOR CLAMP (user: legs sank through the ground): FK has no floor
+    // constraint, so sprawl angles can drive feet/hands below the floor line.
+    // Pin contact points at the floor; segment lengths shorten a hair when
+    // clamped — invisible on stick lines, and better than subterranean limbs.
+    const floor = this.scene.groundY;
+    for (const p of [kneeA, footA, kneeB, footB, elbowA, handA, elbowB, handB]) {
+      if (p.y > floor) p.y = floor;
+    }
+    if (head.y > floor - 12) head.y = floor - 12;   // head circle rests ON floor
     return { head, neck, hip, elbowA, handA, elbowB, handB, kneeA, footA, kneeB, footB };
   }
 
