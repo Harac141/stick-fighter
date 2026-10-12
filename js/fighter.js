@@ -114,6 +114,12 @@ class Fighter {
     this.cyclePhase = 0;       // 0..1 gait phase, advanced by ACTUAL speed (no foot slip)
     this.wallContact = false;  // scene sets true when body-blocked by opponent
     this.wallBlockDir = 0;     // +1/-1: direction the opponent is blocking
+    // Airborne pose parameter: 0 = tuck (launch), 1 = reach (land). EASED on
+    // the fixed sim step toward the vy-derived target — NOT read directly
+    // from vy at render time (that made the pose chase gravity's rate and
+    // snap on jump-cut; the ease makes it trail ~half a beat, gradual).
+    this.airT = 0.5;
+    this.wasAirborne = false;
     this.airborne = false;
 
     // Cooldowns & timers (frames).
@@ -175,6 +181,17 @@ class Fighter {
 
     // Air/ground bookkeeping.
     this.airborne = !this.onGround;
+
+    // Ease the airborne pose parameter on the FIXED step (never from render:
+    // this keeps the ease identical across refresh rates).
+    if (this.airborne) {
+      const vj = CFG.jump.velocity;
+      const vy = this.body.velocity.y;
+      const target = Math.max(0, Math.min(1, (vy - vj) / (-2 * vj)));
+      if (!this.wasAirborne) this.airT = target;  // fresh launch: no stale drift
+      else this.airT += (target - this.airT) * 0.10;  // ~10-frame settle: gradual
+    }
+    this.wasAirborne = this.airborne;
 
     // Body-block contact (set by scene.separateBodies; consumed here so it
     // survives until the next sim step's update). While wallContact: no
@@ -594,20 +611,15 @@ class Fighter {
         break;
       case 'jump':
       case 'fall': {
-        // ONE continuous airborne pose parameterised by vertical velocity, so
-        // there is no jump->fall POPE at the apex. t=0 rising (tuck: knees up,
-        // compact), t=1 falling (reach: legs extend to land). Symmetric |vy|
-        // heights give t<0.5 on the way up, t>0.5 coming down — the natural
-        // asymmetry that sells gravity. Smoothstep for a soft apex dwell.
-        const vy = this.body ? this.body.velocity.y : 0;
-        let t = (vy - CFG.jump.velocity) / (-2 * CFG.jump.velocity); // vy -640->0, +640->1
+        // ONE continuous airborne pose driven by the EASED parameter airT
+        // (0 = tuck at launch, 1 = reach to land; update() eases it on the
+        // fixed step). No discrete jump/fall poses and no vy-snapping.
+        let t = (typeof this.airT === 'number') ? this.airT : 0.5;
         t = Math.max(0, Math.min(1, t));
-        t = t * t * (3 - 2 * t);
         const lerp = (a, b) => a + (b - a) * t;
         lean = lerp(0.07, 0.05);
         footF = P(f * lerp(10, 8),   feetY - lerp(26, 4));   // front knee tucks->down
         footB = P(f * lerp(-12, -18), feetY - lerp(10, 20));  // rear foot kicks back
-        this._airT = t;   // arms read the same parameter (see ARM layer)
         break;
       }
       case 'attack': {
@@ -720,7 +732,7 @@ class Fighter {
     } else if (this.state === 'jump' || this.state === 'fall') {
       // arms follow the SAME airborne parameter as the legs (rise: guard up;
       // fall: arms lift/back to brace), no cut at the apex.
-      const t = this._airT ?? 0.5;
+      const t = Math.max(0, Math.min(1, (typeof this.airT === 'number') ? this.airT : 0.5));
       const lerp = (a, b) => a + (b - a) * t;
       handF = P(f * lerp(14, 12), feetY - lerp(66, 74));
       handB = P(f * lerp(2, -10), feetY - lerp(68, 72));

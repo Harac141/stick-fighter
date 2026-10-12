@@ -36,6 +36,8 @@ class LabScene extends Phaser.Scene {
         if (row.name) { f.currentAttack = row.name; }
         // Drive animation time / attack frame from the phase.
         if (row.burst) f.dashTimer = 6;  // frozen mid-burst
+        if (row.state === 'jump') f.airT = 0.08;   // tuck
+        if (row.state === 'fall') f.airT = 0.92;   // reach
         if ((row.state === 'run' || row.whileMoving || (row.state === 'dash' && !row.burst)) && !row.burst) f.cyclePhase = row.phase(i);
         if (row.state === 'dash' && !row.burst) f.body.velocity.x = 450;
         if (row.burst) f.cyclePhase = 0.0;
