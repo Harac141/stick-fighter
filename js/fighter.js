@@ -62,10 +62,14 @@ const CFG = {
   ragdoll: {
     bounces: 1,           // floor contacts before settling (meteor kills spend it)
     bounceMinVy: 190,     // impact speed needed to bounce
-    bounceMaxVy: 300,     // rebound speed ceiling
+    bounceMaxVy: 520,     // rebound speed ceiling (cap impact then restitution)
     airK: 26, airC: 3.5,        // limb pendulum while airborne (underdamped=whips)
-    groundK: 120, groundC: 12,  // ...and once grounded (settles fast)
+    groundK: 260, groundC: 15,  // ...and once grounded (SNAP to sprawl, not float)
     torsoK: 60, torsoC: 12,     // torso springs flat on the floor
+    airDrag: 0.12,        // per-second corpse air drag (near-none: momentum!)
+    groundFriction: 3.2,  // per-second slide decay once on the floor
+    limbKick: 0.014,      // limb ang-impulse per px/s of floor impact
+    impactMin: 120,       // impact speed before contact whips limbs at all
     flailMaxFrames: 240,        // safety: force-freeze anything that never settles
     restFrames: 90,             // frozen "still image" hold before fading out
     fadeFrames: 45,
@@ -552,9 +556,10 @@ class Fighter {
     const K = CFG.ragdoll;
     const v = this.body.velocity;
     const rnd = (a) => (Math.random() * 2 - 1) * a;
-    // Launch feel: grounded deaths get an upward pop (a KO should not just
-    // slide over); airborne deaths keep whatever the killing blow gave them.
-    if (this.onGround) v.y = -260 - Math.random() * 130;
+    // INHERIT THE BLOW (user: uppercut KOs lost all their vy — this pop used
+    // to OVERWRITE knockback velocity). Add liveliness ON TOP of the killing
+    // blow's launch, capped to the jump-speed scale so nothing leaves the sky.
+    if (this.onGround) v.y = Math.max(CFG.jump.velocity, Math.min(v.y, 0) - (140 + Math.random() * 90));
     // Hand physics to ragStep: with the arcade body DISABLED, world.step
     // skips it entirely — ragStep's manual integration is the only mover
     // (no gravity double-apply) and settled corpses touch zero physics.
@@ -608,8 +613,9 @@ class Fighter {
 
     // Ballistic body — the ONLY integrator now: ko() disabled the arcade
     // body, so arcade's world.step skips it (otherwise gravity double-applies).
+    // Near-zero air drag: the corpse keeps the blow's momentum (user).
     v.y += CFG.gravity * dt;
-    v.x *= (1 - 1.6 * dt);                       // air drag on the corpse
+    v.x *= (1 - K.airDrag * dt);
     this.sprite.x += v.x * dt;
     this.sprite.y += v.y * dt;
     // World bounds: walls catch flying bodies (ragdoll keeps wall-pin energy).
@@ -625,23 +631,32 @@ class Fighter {
     const onGnd = this.sprite.y >= centerY - 0.5;
     if (onGnd) {
       this.sprite.y = centerY;
+      // IMPACT (contact frame only: v.y is the pre-clamp fall speed here, and
+      // 0 on rest frames). Whips limbs from the blow — magnitude scales with
+      // impact, direction with the slide — and re-targets each limb to the
+      // angle it WHIPPED to (user: no more slow settle to pre-randomized
+      // poses; where the fall throws a limb is roughly where it stays).
+      if (v.y > K.impactMin) {
+        const kick = Math.min(v.y, 600) * K.limbKick;          // rad/s impulse
+        const dirX = Math.sign(v.x || this.facing);
+        for (const j of [rd.legA, rd.legB, rd.armA, rd.armB]) {
+          j.thv += dirX * kick * (0.75 + Math.random() * 0.5);
+          j.restF = Math.max(-1.9, Math.min(1.9, j.th + dirX * kick * 0.06));
+        }
+        rd.torso.thv += dirX * kick * 0.5;
+      }
       if (v.y > K.bounceMinVy && rd.bounces > 0) {
         rd.bounces--;
         v.y = -Math.min(v.y, K.bounceMaxVy) * 0.45;   // hard deaths bounce
-        // Impact whips the limbs harder (impulse ~ impact speed).
-        const kick = Math.min(v.y * -1, 400) * 0.02;
-        rd.legA.thv += (Math.random() < 0.5 ? 1 : -1) * kick;
-        rd.legB.thv += (Math.random() < 0.5 ? 1 : -1) * kick;
-        rd.armA.thv += (Math.random() < 0.5 ? 1 : -1) * kick * 0.8;
-        rd.armB.thv += (Math.random() < 0.5 ? 1 : -1) * kick * 0.8;
       } else if (v.y > 0) {
         v.y = 0;
       }
-      v.x *= (1 - 6 * dt);                            // ground scrape
+      v.x *= (1 - K.groundFriction * dt);             // slide, then stop
     }
 
     // Joint springs: theta'' = -K(theta - rest) - C*theta'. Underdamped in
-    // air (limbs whip), stiff once grounded (sprawl fast, then hold).
+    // air (limbs whip); on the ground stiff+damped so the sprawl SNAPS in
+    // behind the impact impulse instead of floating toward it.
     const grounded = onGnd && v.y === 0;
     rd.gnd = grounded;
     const set = (j, rest, kv, cv) => {
