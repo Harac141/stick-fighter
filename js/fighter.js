@@ -137,7 +137,7 @@ class Fighter {
   // always sprint; dash BURST (dashTimer>0) is its own leap pose.
   gaitMode() {
     if (this.airborne) return 'none';
-    if (this.state === 'dash') return this.dashTimer <= 0 ? 'sprint' : 'none';
+    if (this.state === 'dash') return 'sprint';  // burst layers the leap on top
     if (this.state === 'run') return 'walk';
     if (this.state === 'attack') {
       const sp = this.body ? Math.abs(this.body.velocity.x) : 0;
@@ -205,9 +205,7 @@ class Fighter {
       const dir = input.left ? -1 : (input.right ? 1 : this.facing);
       this.facing = dir;
       this.state = 'dash';
-      this._snapNext = true;
-      // Enter the gait about to land a foot, so burst->sprint flows.
-      if (this.dashSustainKey === null) this.cyclePhase = 0.06;
+      this._snapNext = true;   // instant read on trigger (blended OUT by design)
       this.dashTimer = CFG.dash.burstFrames;  // burst phase, then hold-to-sprint
       // Double-tap dashes sustain on the direction key; Shift dashes on Shift.
       this.dashSustainKey = (input.dashSrc === 'tap') ? dir : null;
@@ -563,16 +561,7 @@ class Fighter {
         lean = mode === 'sprint' ? 0.18 : 0.14;   // brisk purposeful walk
         break;
       case 'dash':
-        if (this.dashTimer > 0) {
-          // BURST: explosive push-off (think the first stride of a 40m start,
-          // not a jump): front knee drives up/forward, BACK LEG FULLY EXTENDED
-          // down-and-behind, toe still pushing off the ground.
-          lean = 0.38; hipX = x; hipY = feetY - 47; headExtra = f * 5;
-          footF = P(f * 17, feetY - 30);               // front knee drives up/forward
-          footB = P(-f * 36, feetY - 16);              // trailing leg extended, low
-        } else {                                     // sprint phase: gait layer owns legs
-          lean = 0.3;
-        }
+        lean = 0.3;   // sprint base; burst leap blends over it in the gait block
         break;
       case 'jump':
         lean = 0.07;
@@ -639,6 +628,21 @@ class Fighter {
         // over phase windows avoids IK over-stretch at toe-off).
         const bothAir = footF.y < feetY - 6 && footB.y < feetY - 6;
         hipY = feetY - 40 + (bothAir ? -5 : 3.5);   // rise in flight, sink at contact
+        if (this.state === 'dash' && this.dashTimer > 0) {
+          // BURST: layer the push-off LEAP over the sprint gait, fading the
+          // leap out as dashTimer counts down. At the final burst frame the
+          // pose IS the gait pose, so burst -> sprint hand-off is continuous
+          // (no snap, no teleport). ease^0.8 holds the leap ~60% of the burst,
+          // then settles into the stride over the last ~4 frames.
+          const w = this.dashTimer / CFG.dash.burstFrames;
+          const ease = Math.pow(w, 0.8);
+          const lp = (a, b) => ({ x: a.x + (b.x - a.x) * ease, y: a.y + (b.y - a.y) * ease });
+          footF = lp(footF, { x: hipX + f * 17, y: feetY - 30 });  // front knee drives up
+          footB = lp(footB, { x: hipX - f * 36, y: feetY - 16 });  // back leg extended push-off
+          hipY += (feetY - 47 - hipY) * ease;
+          lean += (0.38 - lean) * ease;
+          headExtra = f * 5 * ease;
+        }
       } else {
         // Walk bob: hip LOW at double support, slightly HIGH at one-leg
         // mid-stance (the classic walk pendulum). No flight — ever.
@@ -674,8 +678,6 @@ class Fighter {
         handF = P(reach * (1 - k) + f * (12 + os), chestY);
         handB = P(f * (4 + os * 0.5), feetY - 64);
       }
-    } else if (this.state === 'dash' && this.dashTimer > 0) {
-      handF = P(f * 22, feetY - 70); handB = P(-f * 18, feetY - 50);  // leap: arms up/back
     } else if (this.state === 'jump') {
       handF = P(f * 14, feetY - 66); handB = P(f * 2, feetY - 68);
     } else if (this.state === 'fall') {
@@ -704,6 +706,15 @@ class Fighter {
       const A = armAt(a1), B = armAt(a2);          // opposite phase to legs
       handF = A.hand; elbowF = A.elbow;
       handB = B.hand; elbowB = B.elbow;
+      if (this.state === 'dash' && this.dashTimer > 0) {
+        // leap arms (up-and-back, long-jump takeoff) fading into the pump
+        const ease = Math.pow(this.dashTimer / CFG.dash.burstFrames, 0.8);
+        const lp = (a, b) => ({ x: a.x + (b.x - a.x) * ease, y: a.y + (b.y - a.y) * ease });
+        handF = lp(handF, { x: hipX + f * 22, y: feetY - 70 });
+        handB = lp(handB, { x: hipX - f * 18, y: feetY - 50 });
+        elbowF = lp(elbowF, { x: neck.x + f * 10, y: neck.y - 8 });
+        elbowB = lp(elbowB, { x: neck.x - f * 12, y: neck.y + 2 });
+      }
     } else {                                        // idle breathing guard
       const bob = Math.sin(this.animTime * 3) * 1.5;
       handF = P(f * 16, feetY - 64 + bob); handB = P(f * 4, feetY - 66 + bob);
