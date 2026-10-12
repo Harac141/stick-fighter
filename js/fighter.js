@@ -674,11 +674,19 @@ class Fighter {
         return { x: hipX + f * (-BACK + ease * (BACK + FWD)), y: feetY - lift };
       };
       footF = leg(q1); footB = leg(q2);
+      // Hip height from a CONTINUOUS flightness measure, never a boolean.
+      // The old `bothAir ? -5 : 3.5` toggled the hip 8.5px in ONE frame the
+      // instant both feet crossed a -6px threshold (and flickered when a foot
+      // hovered near it) — that was the sprint "body pops up for a frame".
+      // aF/aB ramp 0(grounded)->1(airborne) through a height band, so the
+      // hip glides instead of stepping.
+      const airOf = (ft, band) =>
+        Math.max(0, Math.min(1, (feetY - ft.y) / band));
       if (sprint) {
-        // True flight = BOTH feet actually off the ground (trusting height
-        // over phase windows avoids IK over-stretch at toe-off).
-        const bothAir = footF.y < feetY - 6 && footB.y < feetY - 6;
-        hipY = feetY - 40 + (bothAir ? -5 : 3.5);   // rise in flight, sink at contact
+        // Body is airborne only when the LAST foot leaves -> flightness is
+        // the MIN of the two feet's airborneness (both must clear to rise).
+        const AF = Math.min(airOf(footF, 12), airOf(footB, 12));
+        hipY = feetY - 40 + (3.5 - 8.5 * AF);   // +3.5 contact sink .. -5 flight rise
         if (this.state === 'dash' && this.dashTimer > 0) {
           // BURST: layer the push-off LEAP over the sprint gait, fading the
           // leap out as dashTimer counts down. At the final burst frame the
@@ -696,9 +704,10 @@ class Fighter {
         }
       } else {
         // Walk bob: hip LOW at double support, slightly HIGH at one-leg
-        // mid-stance (the classic walk pendulum). No flight — ever.
-        const doubleSupport = footF.y >= feetY - 1 && footB.y >= feetY - 1;
-        hipY = feetY - 39 + (doubleSupport ? 2 : -1.5);
+        // mid-stance (the classic pendulum). No flight — ever. Rise when
+        // EITHER foot lifts -> max of the two feet's airborneness.
+        const MF = Math.max(airOf(footF, 7), airOf(footB, 7));
+        hipY = feetY - 39 + (2 - 3.5 * MF);     // +2 low .. -1.5 high
       }
     }
 
