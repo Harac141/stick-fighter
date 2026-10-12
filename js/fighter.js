@@ -167,6 +167,9 @@ class Fighter {
     const b = this.sprite.body;
     b.setAllowGravity(true);
     b.setCollideWorldBounds(true);
+    b.checkCollision.down = false;  // side walls stay; world BOTTOM lets bodies
+                                    // fall past into pits (levels) — resolveGround
+                                    // owns all grounding, world height is slack.
     b.setDamping(true);
     b.setDragX(0); // we apply our own friction per-state
 
@@ -182,6 +185,15 @@ class Fighter {
     this.animTime = 0;         // seconds, drives idle bob
     this.cyclePhase = 0;       // 0..1 gait phase, advanced by ACTUAL speed (no foot slip)
     this.wallContact = false;  // scene sets true when body-blocked by opponent
+    // ---- Level ground state (scene.resolveGround owns these; see main.js) ----
+    this._plat = null;         // top-y of the surface we're standing on, or null
+    this._platSolid = false;   // floors[] true (no drop-through), platforms[] false
+    this._prevFeet = null;     // swept ground-contact check
+    this.dropT = 0;            // frames of one-way pass-through (down+jump)
+    this.lastSafeX = null;     // pit-recovery point (last place we had footing)
+    this._grounded = false;    // scene.resolveGround owns (levels: any surface)
+    this._platX = null; this._platX2 = null;  // slab span we're riding (edge fall)
+    this.invuln = 0;           // frames of hit-invulnerability (pit recovery)
     this.wallBlockDir = 0;     // +1/-1: direction the opponent is blocking
     // Airborne pose parameter: 0 = tuck (launch), 1 = reach (land). EASED on
     // the fixed sim step toward the vy-derived target — NOT read directly
@@ -207,7 +219,11 @@ class Fighter {
     this.hitboxes = [];        // {x,y,w,h,...} world-space rect (left,top,w,h)
   }
 
-  get onGround() { return this.sprite.body.blocked.down; }
+  // Ground truth comes from the scene (levels: floors[] AND one-way
+  // platforms[]; flat arena: the groundY plane). The old arcade
+  // blocked.down still matches on the flat arena, but with a manual-stepped
+  // world it no longer covers platforms/pits.
+  get onGround() { return this._grounded; }
 
   // Which gait animation applies RIGHT NOW. Walk and sprint are separate
   // cycles: one blended compromise looked bad as either. Dash hold-phase is
@@ -236,6 +252,7 @@ class Fighter {
     // Tick frame timers.
     if (this.dashCooldown > 0) this.dashCooldown--;
     if (this.attackCooldown > 0) this.attackCooldown--;
+    if (this.invuln > 0) this.invuln--;
 
     if (this.hitstun > 0) {
       this.hitstun--;
@@ -370,6 +387,12 @@ class Fighter {
 
     // ---- Jump (variable height) ----
     if (input.jump && !this.airborne) {
+      // Drop-through: DOWN + JUMP on a one-way platform passes through
+      // (levels.js platforms[]; floors[] are solid and ignore this).
+      if (input.down && this.onGround && this._plat !== null && !this._platSolid) {
+        this.dropT = 10;          // ~1/6 s of pass-through — clears the slab
+        this._plat = null; this._grounded = false;
+      }
       if (this.state === 'dash') {
         // Dash-jump: keep horizontal velocity exactly as-is; only arm cooldown.
         this.dashCooldown = CFG.dash.cooldown;
@@ -646,11 +669,13 @@ class Fighter {
       this.sprite.x = this.scene.levelWidth - hw; v.x = -Math.abs(v.x) * 0.35;
     }
 
-    // Floor. (ragdoll-local ground flag: `onGround` reads arcade blocked.down,
+    // Floor: scene-owned (levels.js floors[]/pits change it per-x — see
+    // FightScene.ragdollGround; flat arena = groundY as before).
+    // (ragdoll-local ground flag: `onGround` reads arcade blocked.down,
     // which never updates while the body is disabled.)
-    const centerY = this.scene.groundY - CFG.body.height / 2;
-    const onGnd = this.sprite.y >= centerY - 0.5;
-    if (onGnd) {
+    const centerY = this._ragFloor;
+    const onGnd = this._ragGnd === true;
+    if (onGnd && centerY !== null && centerY !== undefined) {
       this.sprite.y = centerY;
       // LIE-DOWN: first ground contact starts a SHORT pose blend (user:
       // "over a couple frames", not instant, not smoothed-with-springs).
@@ -686,7 +711,7 @@ class Fighter {
               armB: (lean > 0.15 && Math.random() < 0.5 ? hw * (1.25 + Math.random() * 0.45) : armT()) * f,
               bendA: bendT() * f, bendB: bendT() * f,
             },
-            hipFrom: rd.hipY, hipTo: this.scene.groundY - 14,
+            hipFrom: rd.hipY, hipTo: (centerY !== null && centerY !== undefined ? centerY : this.scene.groundY - CFG.body.height / 2) + CFG.body.height / 2 - 14,
           };
           rd.torso.thv = 0;
           for (const j of [rd.legA, rd.legB, rd.armA, rd.armB]) j.thv = 0;
@@ -765,7 +790,8 @@ class Fighter {
     // constraint, so sprawl angles can drive feet/hands below the floor line.
     // Pin contact points at the floor; segment lengths shorten a hair when
     // clamped — invisible on stick lines, and better than subterranean limbs.
-    const floor = this.scene.groundY;
+    const floor = (this._ragFloor == null) ? this.scene.groundY
+                    : this._ragFloor + CFG.body.height / 2;   // slab top (platform or groundY)
     for (const p of [kneeA, footA, kneeB, footB, elbowA, handA, elbowB, handB]) {
       if (p.y > floor) p.y = floor;
     }

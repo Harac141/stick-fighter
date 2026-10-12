@@ -16,52 +16,292 @@ const SIM_STEP = Fighter.STEP;
 class FightScene extends Phaser.Scene {
   constructor() { super('fight'); }
 
+  // ---- Level loader (js/levels.js registry) -------------------------------
+  // ?level=dojo|rooftop|warehouse loads authored data (width/sky/floors/
+  // platforms/spawns come from the level; ?width= still overrides for tests).
+  // No level param = the old flat arena: ?mooks=N keeps working EXACTLY as
+  // before on the arcade world (this.level stays null).
+  loadLevel() {
+    const q = new URLSearchParams(location.search);
+    const name = (q.get('level') || (window.LEVELS ? '' : '') || '').toLowerCase();
+    const lv = name && window.LEVELS && window.LEVELS[name];
+    if (!lv) return null;
+    const W = 1280;
+    const wParam = q.get('width');
+    const urlW = wParam === null ? NaN : Number(wParam);
+    return {
+      name,
+      width: Number.isFinite(urlW) ? Math.max(W, Math.min(8192, urlW))
+                                   : Math.max(W, lv.width || W),
+      sky: lv.sky || [0x101423, 0x1b2440],
+      p1x: lv.p1x != null ? lv.p1x : 200,
+      respawnX: lv.respawnX != null ? lv.respawnX : (lv.p1x != null ? lv.p1x : 160),
+      // floors[] solid slabs (top at groundY, gaps = pits); platforms[] one-way.
+      floors: (lv.floors || []).map((f) => ({ x: f.x, w: f.w })),
+      platforms: (lv.platforms || []).map((p) => ({
+        x: p.x, w: p.w, top: this.groundY + (p.y || 0),
+      })),
+      spawns: lv.spawns || [],
+    };
+  }
+
+  // World y of the floor slab under x, or null over a pit. Flat arena
+  // (no level) -> always groundY. Floors are solid: ragdolls rest on them
+  // too; a corpse falls INTO a pit and dies in the void.
+  floorAt(x) {
+    const lv = this.level;
+    if (!lv) return this.groundY;
+    for (const f of lv.floors) if (x >= f.x && x <= f.x + f.w) return this.groundY;
+    return null;
+  }
+
+  // Highest surface at or below footY: floors (solid) and platforms (one-way,
+  // only catch a falling foot; the caller decides pass-through via dropT).
+  surfaceUnder(x, footY) {
+    let top = null, solid = false;
+    const lv = this.level;
+    if (!lv) {
+      if (footY >= this.groundY - 0.01) { top = this.groundY; solid = true; }
+    } else {
+      for (const f of lv.floors) {
+        if (x >= f.x && x <= f.x + f.w && footY >= this.groundY - 0.01
+            && (top === null || this.groundY > top)) { top = this.groundY; solid = true; }
+      }
+      for (const p of lv.platforms) {
+        if (x >= p.x && x <= p.x + p.w && footY >= p.top - 0.01
+            && (top === null || p.top > top)) { top = p.top; solid = false; }
+      }
+    }
+    return top === null ? null : { top, solid };
+  }
+
+  // One pass per sim tick AFTER the fighter loop (Phaser still integrates
+  // positions on its own render-frame step; we own ALL grounding: floors,
+  // one-way platforms, pits — see the world-bounds height bump in create()).
+  // Swept check (prev feet -> new feet) so high-speed knockback can't tunnel
+  // through a thin platform.
+  resolveGround() {
+    const centerYFor = (top) => top - CFG.body.height / 2;
+    for (const f of this.fighters) {
+      if (f.gone) continue;
+      if (f.dead) { this.ragdollGround(f); continue; }
+      const b = f.body, half = CFG.body.width / 2;
+      const x = f.sprite.x;
+      if (f.dropT > 0) f.dropT--;
+      const feet = f.sprite.y + CFG.body.height / 2;
+      const vy = b.enable ? b.velocity.y : 0;   // ragdoll bodies are disabled
+      const prev = (f._prevFeet === null || f._prevFeet === undefined) ? feet : f._prevFeet;
+      f._prevFeet = feet;
+      // Riding a surface? Only while actually SEATED near it (not rising:
+      // jump = vy strongly negative; not fast-falling: a real fall through
+      // the slab has vy in the hundreds), and while the slab still extends
+      // under us (walking off an edge drops normally). The generous +60 band
+      // exists because arcade re-adds gravity every RENDER frame while we
+      // snap per SIM step: a standing body drifts a few px below the top
+      // line between snaps, and re-snap-from-below is what keeps it seated.
+      // A genuine fall covers 60px at vy>=430, so it never falls in here.
+      let surf = null;
+      if (f._plat !== null && vy >= -1 && vy <= 90 && feet >= f._plat - 3 && feet <= f._plat + 60
+          && this.spanAt(f._plat, x, f._platSolid)) {
+        surf = { top: f._plat, solid: f._platSolid };
+      }
+      // One-way rule: only land when a FALLING foot swept through the top.
+      if (!surf && vy >= 0 && f.dropT <= 0) {
+        const lo = Math.min(prev, feet), hi = Math.max(prev, feet);
+        const lv = this.level;
+        if (lv) {
+          for (const p of lv.platforms) {
+            if (x >= p.x - half && x <= p.x + p.w + half
+                && hi >= p.top - 0.01 && lo <= p.top + 0.01
+                && (surf === null || p.top > surf.top)) surf = { top: p.top, solid: false };
+          }
+          // FLOOR snap is unconditional once feet are AT/BELOW the line and a
+          // slab is under us (solid slabs — the only way below the line is
+          // through it; a high-speed fall can straddle the sweep window, and
+          // once below it never re-crosses). Platforms keep the swept rule so
+          // jumps can pass up through them.
+          if (x >= 0 && x <= lv.width && hi >= this.groundY - 0.01) {
+            for (const fl of lv.floors) {
+              if (x >= fl.x - half * 0.5 && x <= fl.x + fl.w + half * 0.5) {
+                surf = { top: this.groundY, solid: true }; break;
+              }
+            }
+          }
+        } else if (hi >= this.groundY - 0.01 && lo <= this.groundY + 0.01) {
+          surf = { top: this.groundY, solid: true };
+        }
+      }
+      if (surf) {
+        f._plat = surf.top; f._platSolid = surf.solid;
+        f._platX = f._platX2 = null;   // recomputed below when seated
+        const cy = centerYFor(surf.top);
+        if (f.sprite.y > cy) f.sprite.y = cy;
+        if (b.enable && b.velocity.y > 0) b.setVelocityY(0);
+        f._grounded = true;
+        // remember the slab span so the riding check can fall off its edge
+        const sp = this.spanAt(surf.top, x, surf.solid);
+        if (sp) { f._platX = sp.x0; f._platX2 = sp.x1; }
+        if (!f.dead) f.lastSafeX = x;    // pit-recovery anchor (live feet only)
+      } else {
+        f._grounded = false;
+        f._plat = null;
+      }
+      // Pit death / respawn (live fighters only — ragdolls handled above).
+      const cy0 = centerYFor(this.groundY);
+      if (f.sprite.y > cy0 + 60) {
+        if (f.ai) { this.killInPit(f); continue; }
+        this.playerPitRecover(f);
+      }
+    }
+  }
+
+  // Slab span containing x at a given surface top (edge-fall detection).
+  spanAt(top, x, solidFloor) {
+    if (solidFloor) {
+      for (const fl of (this.level ? this.level.floors : [{ x: 0, w: this.levelWidth }]))
+        if (x >= fl.x && x <= fl.x + fl.w) return { x0: fl.x, x1: fl.x + fl.w };
+      for (const fl of (this.level ? this.level.floors : []))
+        if (x >= fl.x - 24 && x <= fl.x + fl.w + 24) return { x0: fl.x, x1: fl.x + fl.w };
+      return null;
+    }
+    for (const p of (this.level ? this.level.platforms : []))
+      if (p.top === top && x >= p.x - 32 && x <= p.x + p.w + 32) return { x0: p.x, x1: p.x + p.w };
+    return { x0: -1e9, x1: 1e9 };
+  }
+
+  // A mook fell into a pit: outright death, corpse ragdolls into the void.
+  // (Player pit = hp tax + reposition — see playerPitRecover; mooks have no
+  // recovery so the pit is a stage hazard to be juke'd, Bruce Lee style.)
+  killInPit(f) {
+    f.takeHit({ damage: 999, knock: { x: 0, y: -260, hitstun: 0 } }, 1);
+  }
+
+  // Pit tax: 25 hp, reposition to last safe footing, brief hitstun so you
+  // can't be combo'd the instant you're dropped back in.
+  playerPitRecover(f) {
+    f.health = Math.max(0, f.health - 25);
+    const x = (f.lastSafeX != null ? f.lastSafeX : (this.level ? this.level.respawnX : f.sprite.x));
+    const cy = this.groundY - CFG.body.height / 2;
+    f.sprite.body.reset(x, cy);
+    f._plat = this.groundY; f._platSolid = true; f._prevFeet = this.groundY;
+    f._grounded = true;
+    f.hitstun = Math.max(f.hitstun, 30);
+    f.invuln = 33;            // ~0.55 s: land, blink, get up (resolveHits skips)
+    f.state = 'hurt';
+    if (f.health <= 0) f.takeHit({ damage: 999, knock: { x: 0, y: 0, hitstun: 0 } }, 1);
+  }
+
+  // Ragdolls share the pit logic: a corpse over a gap keeps falling (limbs
+  // keep flailing) until it's far below the floor line, then it's gone.
+  ragdollGround(f) {
+    const rd = f.ragdoll;
+    if (!rd || rd.settled) return;
+    const floor = this.floorAt(f.sprite.x);
+    const cy = (floor === null ? this.groundY : floor) - CFG.body.height / 2;
+    f._ragFloor = (floor === null) ? null : cy;
+    const v = f.body.velocity;
+    if (floor !== null && f.sprite.y >= cy - 0.5 && v.y >= 0) {
+      f.sprite.y = cy;
+      if (v.y > 0) v.y = 0;
+      f._ragGnd = true;
+    } else if (floor !== null && f.sprite.y >= cy - 0.5) {
+      f._ragGnd = true;
+    } else {
+      f._ragGnd = false;
+    }
+    if (f.sprite.y > this.groundY + 80) {   // fell into a pit -> fade it out
+      rd.settled = true; rd.freeze = null; rd.restLeft = Math.min(rd.restLeft || 60, 18);
+    }
+  }
+
   create() {
     const W = 1280, H = 720;
     this.groundY = 620;
+    // ---- Level (js/levels.js) ---- must load before fighters/stage/bounds.
+    this.level = this.loadLevel();
     // Level width (scrolling): ?width= overrides for testing; default = one
     // screen so the duel behaves exactly as before (camera clamps to 0).
     const urlW = Number(new URLSearchParams(location.search).get('width'));
-    this.levelWidth = Number.isFinite(urlW) ? Math.max(W, Math.min(8192, urlW)) : W;
+    this.levelWidth = this.level ? this.level.width
+      : (Number.isFinite(urlW) ? Math.max(W, Math.min(8192, urlW)) : W);
     // Camera subject: 'duel' = midpoint of the two fighters (classic FG cam),
     // 'follow' = P1 only with facing lookahead (?follow=1; this becomes the
-    // mook-carving camera).
-    this.camMode = new URLSearchParams(location.search).get('follow') ? 'follow' : 'duel';
+    // mook-carving camera). Levels force follow cam (no duel in a level).
+    this.camMode = (this.level || new URLSearchParams(location.search).get('follow')) ? 'follow' : 'duel';
     // Floor plane at groundY (620) so feet rest on the DRAWN floor line, not the canvas bottom.
-    this.physics.world.setBounds(0, 0, this.levelWidth, this.groundY);
+    // Bottom bound sits BELOW groundY on levels so pits can exist: falling
+    // into the void past resolveGround's pit-death line is what kills.
+    this.physics.world.setBounds(0, 0, this.levelWidth, this.groundY + (this.level ? 240 : 0));
     this.physics.world.gravity.y = CFG.gravity;
 
     // ---- Stage art (drawn once, spans the whole level) ----
     const bg = this.add.graphics();
+    const sky = this.level ? this.level.sky : [0x101423, 0x1b2440];
     // Sky.
-    bg.fillGradientStyle(0x101423, 0x101423, 0x1b2440, 0x1b2440, 1);
+    bg.fillGradientStyle(sky[0], sky[0], sky[1], sky[1], 1);
     bg.fillRect(0, 0, this.levelWidth, H);
-    // Floor slab.
+    // Floor slabs: solid floors[] segments (gaps = pits) on levels; the old
+    // single full-width slab on the flat arena.
     bg.fillStyle(0x2a3050, 1);
-    bg.fillRect(0, this.groundY, this.levelWidth, H - this.groundY);
+    const slabs = this.level ? this.level.floors.map((f) => ({ x: f.x, w: f.w }))
+                             : [{ x: 0, w: this.levelWidth }];
+    for (const s of slabs) {
+      bg.fillRect(s.x, this.groundY, s.w, H - this.groundY + (this.level ? 240 : 0));
+    }
     bg.lineStyle(3, 0x4a557e, 1);
-    bg.lineBetween(0, this.groundY, this.levelWidth, this.groundY);
+    for (const s of slabs) bg.lineBetween(s.x, this.groundY, s.x + s.w, this.groundY);
+    // Pit edge teeth so gaps read as hazards, not "the floor continues".
+    if (this.level) {
+      bg.lineStyle(2, 0x0a0d18, 1);
+      for (const s of slabs) {
+        bg.lineBetween(s.x, this.groundY, s.x, this.groundY + 24);
+        bg.lineBetween(s.x + s.w, this.groundY, s.x + s.w, this.groundY + 24);
+      }
+      // One-way platforms: thinner slabs with a bright top line.
+      for (const p of this.level.platforms) {
+        bg.fillStyle(0x2a3050, 1);
+        bg.fillRect(p.x, p.top, p.w, 14);
+        bg.lineStyle(3, 0x6f86c8, 1);
+        bg.lineBetween(p.x, p.top, p.x + p.w, p.top);
+      }
+    }
     // Back wall lanes for dojo depth.
     bg.lineStyle(1, 0x232b48, 1);
     for (let px = 100; px < this.levelWidth; px += 100) bg.lineBetween(px, 120, px, this.groundY);
 
     // ---- Fighters ----
     const mid = this.levelWidth / 2;
-    this.p1 = new Fighter(this, mid - 220, this.groundY, 1, 0xf2f2f2);
+    const p1x = this.level ? this.level.p1x : mid - 220;
+    this.p1 = new Fighter(this, p1x, this.groundY, 1, 0xf2f2f2);
     this.p2 = new Fighter(this, mid + 220, this.groundY, -1, 0x9ad0ff);
     this.p1.inputKey = 'p1'; this.p2.inputKey = 'p2';   // map to keyboard input slots
     // Master roster: everyone the sim steps, hits and separates. p1/p2 stay
     // as named refs (input + HUD); mooks append here (ai-driven).
     this.fighters = [this.p1, this.p2];
 
-    // ---- Mook arena (?mooks=N spawns N AI fighters on the right half) ----
+    // ---- Mooks: level spawns OR arena (?mooks=N on the right half) ----
     const urlM = Number(new URLSearchParams(location.search).get('mooks'));
-    this.mookCount = Number.isFinite(urlM) ? Math.max(0, Math.min(24, urlM)) : 0;
-    if (this.mookCount > 0) {
-      // Arena mode: solo vs mooks. P2 leaves the roster (not drawn/simulated/
-      // hittable) — the duel shell stays available at mooks=0 for the boss.
+    if (this.level) {
+      // Level mode: solo vs the level's spawn zones. loadT = zones that fire
+      // at once; trigger zones arm when P1 crosses their trigger x.
       this.fighters = [this.p1];
-      this.spawnMooks(this.mookCount);
+      this.spawnZones = [];
+      this.mookCount = 0;
+      for (const sp of this.level.spawns) this.mookCount += (sp.count || 1);
+      for (const sp of this.level.spawns) {
+        const zone = { x: sp.x, count: sp.count || 1, knobs: sp.knobs || {},
+                       trigger: sp.trigger != null ? sp.trigger : null, done: false };
+        this.spawnZones.push(zone);
+        if (zone.trigger == null) this.fireZone(zone);
+      }
+    } else {
+      this.mookCount = Number.isFinite(urlM) ? Math.max(0, Math.min(24, urlM)) : 0;
+      if (this.mookCount > 0) {
+        // Arena mode: solo vs mooks. P2 leaves the roster (not drawn/simulated/
+        // hittable) — the duel shell stays available at mooks=0 for the boss.
+        this.fighters = [this.p1];
+        this.spawnMooks(this.mookCount);
+      }
     }
 
     // ---- Input ----
@@ -202,6 +442,38 @@ class FightScene extends Phaser.Scene {
     }
   }
 
+  // Level spawn zone: `count` mooks clustered around zone.x on the floor
+  // there, facing the player; `knobs` merged into MookAI opts (elites).
+  fireZone(zone) {
+    if (zone.done) return;
+    zone.done = true;
+    if (!this.eng) {
+      const wantQueue = new URLSearchParams(location.search).get('queue') === '1';
+      this.eng = wantQueue ? new EngagementManager({ slots: 1 }) : null;
+    }
+    const px = this.p1 ? this.p1.sprite.x : 0;
+    for (let i = 0; i < zone.count; i++) {
+      const x = Math.max(60, Math.min(this.levelWidth - 60,
+        zone.x + i * 56 + (Math.random() * 36 - 18)));
+      const floorY = (this.floorAt(x) !== null) ? this.floorAt(x) : this.groundY;
+      const face = (px < x) ? -1 : 1;
+      const m = new Fighter(this, x, floorY, face,
+        zone.knobs && zone.knobs.hp > 12 ? 0xffd166 : 0xff8f5a);   // elites tint gold
+      new MookAI(m, Object.assign({ mgr: this.eng }, zone.knobs || {}));
+      m.lastSafeX = x;
+      this.fighters.push(m);
+    }
+  }
+
+  // Trigger zones fire when P1 walks past their trigger x (progress gates:
+  // the far half of the level stays quiet until you get there).
+  checkTriggers() {
+    if (!this.spawnZones) return;
+    for (const z of this.spawnZones) {
+      if (!z.done && z.trigger != null && this.p1.sprite.x >= z.trigger) this.fireZone(z);
+    }
+  }
+
   simStep() {
     const i1 = this.sampleInput('p1');
     const i2 = this.sampleInput('p2');
@@ -215,8 +487,10 @@ class FightScene extends Phaser.Scene {
       f.update(inp);
     }
     if (this.eng) this.eng.tick();   // handoff cooldown pace
+    this.checkTriggers();            // progress-gated spawn zones (levels)
     this.resolveHits();
     this.separateBodies();
+    this.resolveGround();            // floors/platforms/pits (levels; arena = groundY)
     // Reap despawned corpses. Cost note: settled ragdolls integrate NOTHING
     // (frozen still image) and the flailer cap bounds simultaneous live ones,
     // so thousands of accumulated corpses stay ~free until they fade.
@@ -233,6 +507,7 @@ class FightScene extends Phaser.Scene {
     // mook jabs; multi-target heavies become a per-attack flag later.
     const check = (attacker, defender) => {
       if (!attacker.hitboxes.length || defender.dead) return;
+      if (defender.invuln > 0) return;   // pit-recovery grace (levels)
       const dRect = {
         x: defender.sprite.x - CFG.body.width / 2,
         y: defender.sprite.y - CFG.body.height / 2,
@@ -339,6 +614,10 @@ class FightScene extends Phaser.Scene {
       this.add.text(44, 54, 'P1  A/D Space Shift  J K  (W/S+atk)', { fontFamily: 'monospace', fontSize: '13px', color: '#8fa0c8' }),
       this.add.text(1236 - 220, 54, 'P2  Arrows / , .', { fontFamily: 'monospace', fontSize: '14px', color: '#8fa0c8' }),
     ];
+    if (this.level) {
+      this.labels[1].setText('LEVEL: ' + this.level.name.toUpperCase());
+      this.labels.push(this.add.text(44, 74, 'DOWN+JUMP drops through a platform', { fontFamily: 'monospace', fontSize: '12px', color: '#5b6a94' }));
+    }
     for (const t of this.labels) t.setScrollFactor(0);
   }
 
@@ -408,7 +687,7 @@ class FightScene extends Phaser.Scene {
         this.mookLabel.setScrollFactor(0);
       }
       this.mookLabel.setText('MOOKS ' + liveMooks).setX(rx + 8);
-    } else if (this.mookCount === 0) {
+    } else if (this.mookCount === 0 && !this.level) {
       g.fillStyle(0x000000, 0.55); g.fillRect(rx - 4, 28 - 4, barW + 8, barH + 8);
       g.fillStyle(0x22282e, 1); g.fillRect(rx, 28, barW, barH);
       const w2 = barW * this.p2.health / 100;
