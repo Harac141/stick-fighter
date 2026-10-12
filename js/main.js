@@ -1,9 +1,11 @@
 // main.js — scene: stage, players, fixed-step sim loop, hitbox resolution.
 //
-// Controls:
-//   P1: A/D move, W jump, Shift dash, J jab, K heavy
-//   P2: Arrows move/jump, / dash, , (comma) jab, . (period) heavy
-//   F1: toggle hitbox/hurtbox debug view
+// Controls (P1 single player): A/D move, Space jump, Shift dash,
+//   J punch, K heavy; W/S are attack-direction modifiers:
+//   W+J uppercut, W+K cartwheel, S+J sweep, S+K hammerfist;
+//   in air: J air jab, K axe kick; during dash: J/K shoulder check.
+// P2 (duel demo): Arrows move/jump, / dash, , (comma) jab, . (period) heavy.
+// F1: toggle hitbox/hurtbox debug view.
 //
 // The simulation runs at a FIXED 60 Hz step (accumulator pattern) independent
 // of the render rate, so frame data behaves identically on 60/144/165 Hz
@@ -64,7 +66,8 @@ class FightScene extends Phaser.Scene {
 
     // ---- Input ----
     const kb = this.input.keyboard;
-    kb.addCapture(Phaser.Input.Keyboard.KeyCodes.WASD);   // includes S (down modifier)
+    kb.addCapture(Phaser.Input.Keyboard.KeyCodes.WASD);   // S = down modifier (W = up modifier now)
+    kb.addCapture(Phaser.Input.Keyboard.KeyCodes.SPACE);  // jump: stop page scroll
     kb.addCapture(Phaser.Input.Keyboard.KeyCodes.ARROWS);
     kb.addCapture([Phaser.Input.Keyboard.KeyCodes.SHIFT,
                    Phaser.Input.Keyboard.KeyCodes.COMMA,
@@ -73,9 +76,14 @@ class FightScene extends Phaser.Scene {
                    Phaser.Input.Keyboard.KeyCodes.J,
                    Phaser.Input.Keyboard.KeyCodes.K]);
     this.keys = {
-      p1: { left: kb.addKey('A'), right: kb.addKey('D'), jump: kb.addKey('W'), down: kb.addKey('S'),
+      // P1 (single-player): jump = SPACE; W is the UP attack-direction modifier
+      // (up+attack = launcher), not a jump. S is the DOWN modifier (sweep/hammer).
+      p1: { left: kb.addKey('A'), right: kb.addKey('D'), jump: kb.addKey('SPACE'),
+            up: kb.addKey('W'), down: kb.addKey('S'),
             dash: kb.addKey('SHIFT'), jab: kb.addKey('J'), heavy: kb.addKey('K') },
-      p2: { left: kb.addKey('LEFT'), right: kb.addKey('RIGHT'), jump: kb.addKey('UP'), down: kb.addKey('DOWN'),
+      // P2 (duel demo shell): arrows; UP doubles as its jump and up-modifier.
+      p2: { left: kb.addKey('LEFT'), right: kb.addKey('RIGHT'), jump: kb.addKey('UP'),
+            up: kb.addKey('UP'), down: kb.addKey('DOWN'),
             dash: kb.addKey('SLASH'), jab: kb.addKey('COMMA'), heavy: kb.addKey('PERIOD') },
     };
     kb.on('keydown-F1', () => { Fighter.debug = !Fighter.debug; });
@@ -146,7 +154,8 @@ class FightScene extends Phaser.Scene {
     inp.left = k.left.isDown;
     inp.right = k.right.isDown;
     inp.jumpHeld = k.jump.isDown;
-    inp.down = !!k.down && k.down.isDown;   // context modifier (sweep/hammer/stomp)
+    inp.down = !!k.down && k.down.isDown;   // DOWN modifier (sweep/hammerfist)
+    inp.up   = !!k.up   && k.up.isDown;      // UP modifier (uppercut/cartwheel)
     // One-shot states consumed from buffer.
     inp.jump = b.jump > 0 || (k.jump.isDown && !this['prevJump_' + who]);
     this['prevJump_' + who] = k.jump.isDown;
@@ -297,7 +306,7 @@ class FightScene extends Phaser.Scene {
 
   makeLabels() {
     this.labels = [
-      this.add.text(44, 54, 'P1  A/D W S  Shift  J K', { fontFamily: 'monospace', fontSize: '14px', color: '#8fa0c8' }),
+      this.add.text(44, 54, 'P1  A/D Space Shift  J K  (W/S+atk)', { fontFamily: 'monospace', fontSize: '13px', color: '#8fa0c8' }),
       this.add.text(1236 - 220, 54, 'P2  Arrows / , .', { fontFamily: 'monospace', fontSize: '14px', color: '#8fa0c8' }),
     ];
     for (const t of this.labels) t.setScrollFactor(0);

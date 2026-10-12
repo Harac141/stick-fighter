@@ -78,16 +78,16 @@ const CFG = {
     // knockScale = knockback grows with attacker speed; meteor = downward spike.
     uppercut: {                                 // J while rising
       startup: 3, active: 4, recovery: 9,
-      damage: 7, pose: 'upper',
-      box:   { x: 16, y: -36, w: 40, h: 44 },
+      damage: 7, pose: 'upper', air: true,   // air:true = scripted legs (leg pose is the launch)
+      box:   { x: 16, y: -30, w: 46, h: 52 },   // generous: covers body height from the ground
       knock: { x: 120, y: -600, hitstun: 22 },  // launcher: pops straight up
       cooldown: 8,
     },
     cartwheel: {                                // K while rising (Kirby up-smash)
       startup: 4, active: 10, recovery: 12,
-      damage: 5, pose: 'cartwheel',
+      damage: 5, pose: 'cartwheel', air: true,   // scripted legs: the kick IS the pose
       hitFrames: [6, 10],                       // two hits: tick, then pop
-      box:   { x: 10, y: -34, w: 54, h: 56 },
+      box:   { x: 12, y: -30, w: 60, h: 62 },   // generous arc
       knock: { x: 240, y: -560, hitstun: 18 },
       cooldown: 12,
     },
@@ -112,11 +112,11 @@ const CFG = {
       knock: { x: 200, y: -120, hitstun: 12 },
       cooldown: 5,
     },
-    stomp: {                                    // S+K airborne
-      startup: 4, active: 8, recovery: 5,
-      damage: 10, pose: 'stomp', air: true, meteor: true,
-      box:   { x: 2, y: 26, w: 36, h: 38 },     // spikes straight down
-      knock: { x: 0, y: 540, hitstun: 24 },     // meteor: slams into the floor
+    axekick: {                                  // heavy (K) airborne
+      startup: 5, active: 7, recovery: 8,
+      damage: 11, pose: 'axe', air: true, meteor: true,
+      box:   { x: 16, y: 16, w: 56, h: 44 },    // heel CHOPS forward-down: reaches mooks
+      knock: { x: 200, y: 560, hitstun: 24 },   // ahead+below, no hovering to line up; meteor keeps
       cooldown: 8,
     },
     dashatk: {                                  // J/K during dash
@@ -391,24 +391,27 @@ class Fighter {
   canStartAttack() { return !this.currentAttack; }
 
   // Context picker: two attack buttons x stance = whole moveset (Smash/Kirby
-  // grammar). Keys stay the floor; mouse-aim can later pick variants too.
+  // grammar). W/S are attack-DIRECTION modifiers, not movement (jump = SPACE).
   //   grounded J/K          -> jab / heavy
+  //   grounded W+J/K        -> uppercut / cartwheel (launchers; work from run too)
   //   grounded S+J/K        -> sweep / hammerfist
-  //   rising J/K            -> uppercut / cartwheel  ("up+attack" = jump+attack)
   //   air J                 -> airjab   (small, keeps float)
-  //   air S+K               -> stomp    (dive-kick spike, meteor on grounded)
-  //   any time during dash  -> dashatk  (shoulder check, speed-scaled slam)
+  //   air K (or W+K)        -> axekick  (forward-down heel chop, meteor on grounded)
+  //   air W+J               -> uppercut (mid-air pop)
+  //   during dash-burst J/K -> dashatk  (shoulder check, speed-scaled slam)
   selectAttack(input) {
     const H = !!input.heavy, L = !!input.jab;
     if (!H && !L) return null;
     if (this.state === 'dash' && this.dashTimer > 0) return 'dashatk';
-    const rising = this.airborne && this.body.velocity.y < -100;
     if (this.airborne) {
-      if (rising) return H ? 'cartwheel' : 'uppercut';
-      if (H && input.down) return 'stomp';
-      return 'airjab';                            // air light/heavy (air-tagged pose)
+      // W is the ONLY up-indicator (no jump-timing guesswork — that was the
+      // untimable "rising" heuristic). air K always = axe kick.
+      if (input.up) return H ? 'cartwheel' : 'uppercut';
+      if (H) return 'axekick';
+      return 'airjab';
     }
-    if (input.down) return H ? 'hammerfist' : 'sweep';
+    if (input.up) return H ? 'cartwheel' : 'uppercut';   // up+attack = launcher, no jump needed
+    if (input.down) return H ? 'hammerfist' : 'sweep';   // (also works from run)
     return H ? 'heavy' : 'jab';
   }
 
@@ -764,9 +767,10 @@ class Fighter {
           lean = act ? 0.3 : -0.18;
           hipY = feetY - (act ? 36 : 42);
           footF = P(f * 16, feetY); footB = P(-f * (act ? 22 : 16), feetY - (act ? 6 : 0));
-        } else if (atk.pose === 'stomp') {      // both feet spike straight down
-          lean = 0.1;
-          footF = P(f * 8, feetY + (act ? 8 : -2)); footB = P(f * -4, feetY + (act ? 4 : -6));
+        } else if (atk.pose === 'axe') {        // axe kick: knee up, heel chops down-forward
+          lean = act ? -0.12 : 0.06;
+          footF = act ? P(f * 36, feetY - 2) : P(f * 12, feetY - 44);
+          footB = P(-f * (act ? 10 : 6), feetY - (act ? 4 : 0));
         } else if (atk.pose === 'dash') {       // shoulder: lunge, trail leg flat
           lean = 0.34;
           footF = P(f * 24, feetY - (act ? 6 : 0)); footB = P(-f * 34, feetY - (act ? 12 : 2));
@@ -890,8 +894,9 @@ class Fighter {
         else if (act) { uArmF += 8; fArmF += 8;
           handF = P(f * 30, feetY - 34); handB = P(f * 2, feetY - 66); }
         else { handF = P(f * 20, feetY - 48); handB = P(-f * 4, feetY - 62); }
-      } else if (atk.pose === 'stomp') {          // arms up for balance while spiking
-        handF = P(f * 12, feetY - 84); handB = P(-f * 14, feetY - 80);
+      } else if (atk.pose === 'axe') {            // arms swing down with the chop
+        if (act) { handF = P(f * 18, feetY - 48); handB = P(-f * 18, feetY - 56); }
+        else { handF = P(f * 10, feetY - 88); handB = P(-f * 12, feetY - 84); }
       } else if (atk.pose === 'dash') {           // shoulder check, arms tucked back
         if (act) { handF = P(f * 26, feetY - 58); handB = P(-f * 16, feetY - 56); }
         else { handF = P(f * 12, feetY - 60); handB = P(-f * 14, feetY - 58); }
