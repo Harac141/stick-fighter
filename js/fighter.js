@@ -190,8 +190,15 @@ class Fighter {
     // While wallContact (body-blocked by the opponent) the stride FREEZES:
     // the animation is a function of TRUE ground speed, so a stopped fighter
     // stands in a planted pose instead of moonwalk-trotting in place.
+    // Moving OPPOSITE to facing (knockback recovery slides, pushed-back
+    // duels) plays the same cycle BACKWARDS: the phase runs negative, and a
+    // phase-reversed planted gait is a physically correct backpedal (the
+    // planted foot sweeps forward relative to the hip exactly as the body
+    // slides backward, so contact still holds).
     if (!this.airborne && !wall && Math.abs(this.body.velocity.x) > 20) {
-      this.cyclePhase = (this.cyclePhase + Math.abs(this.body.velocity.x) * STEP / this.strideNow()) % 1;
+      const alongFacing = Math.sign(this.body.velocity.x) === this.facing ? 1 : -1;
+      this.cyclePhase = (this.cyclePhase
+        + alongFacing * Math.abs(this.body.velocity.x) * STEP / this.strideNow() + 1) % 1;
     }
 
     // Attack state dominates movement.

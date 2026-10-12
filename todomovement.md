@@ -1,0 +1,4 @@
+[x] Players moving backwards (due to being hit or whatever) should have walking animation played in reverse. Currently when moving backwards, players use walking forwards animation.
+    -> Fixed: gait phase advances by SIGNED distance (travel direction vs facing), so moving opposite facing plays the planted walk/sprint cycle backwards. Still foot-planted (support foot sweeps forward exactly as body slides back). Verified via knockback: run state at vx -512, phase decreasing frame-over-frame. Hurt recoil pose unchanged.
+[ ] Jumping and falling animations should transition smoothly.
+[ ] Get rid of the skid slider. It was useful but we don't need it anymore.
