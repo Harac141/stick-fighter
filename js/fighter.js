@@ -43,7 +43,7 @@ const CFG = {
   gravity: 1900,
   run:      { accel: 3000, turnDecel: 2600, maxSpeed: 250, friction: 500 },  // friction = release skid (tuned; was slider-bound during dev)
   air:      { accel: 1400, maxSpeed: 260 },
-  jump:     { velocity: -640, cutMultiplier: 0.45 },   // variable jump height
+  jump:     { velocity: -920, cutMultiplier: 0.55 },   // variable jump height (v3: -640=108px apex couldn't clear platforms; -920 = ~223px full clears the 200px crates, ~85px tap hop)
   dash:     { burstSpeed: 560, burstFrames: 10, sprintSpeed: 450, cooldown: 26 },
   body:     { width: 40, height: 92 },
   // MAX GROUNDED FOOT OFFSET from hip is sqrt(48^2 - 37.5^2) ~ 30px (leg
