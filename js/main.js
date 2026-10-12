@@ -52,6 +52,16 @@ class FightScene extends Phaser.Scene {
     // as named refs (input + HUD); mooks append here (ai-driven).
     this.fighters = [this.p1, this.p2];
 
+    // ---- Mook arena (?mooks=N spawns N AI fighters on the right half) ----
+    const urlM = Number(new URLSearchParams(location.search).get('mooks'));
+    this.mookCount = Number.isFinite(urlM) ? Math.max(0, Math.min(24, urlM)) : 0;
+    if (this.mookCount > 0) {
+      // Arena mode: solo vs mooks. P2 leaves the roster (not drawn/simulated/
+      // hittable) — the duel shell stays available at mooks=0 for the boss.
+      this.fighters = [this.p1];
+      this.spawnMooks(this.mookCount);
+    }
+
     // ---- Input ----
     const kb = this.input.keyboard;
     kb.addCapture(Phaser.Input.Keyboard.KeyCodes.WASD);
@@ -163,12 +173,26 @@ class FightScene extends Phaser.Scene {
     this.renderAll();
   }
 
+  // ---- Mooks ----
+  // A mook IS a player fighter with a MookAI attached: same class, same
+  // moveset, same physics. Difficulty = knobs. Spawns on the right half.
+  spawnMooks(n) {
+    for (let i = 0; i < n; i++) {
+      const x = Math.min(this.levelWidth - 80,
+        this.levelWidth * 0.62 + i * 60 + (Math.random() * 40 - 20));
+      const m = new Fighter(this, x, this.groundY, -1, 0xff8f5a);
+      new MookAI(m, {});
+      this.fighters.push(m);
+    }
+  }
+
   simStep() {
     const i1 = this.sampleInput('p1');
     const i2 = this.sampleInput('p2');
     this.lastIn = { p1: i1, p2: i2 };   // press-intent for separateBodies
     for (const f of this.fighters) {
       if (f.dead) continue;
+      if (f.ai) f.ai.think(this.fighters);   // AI writes f.aiIn for this step
       // Player fighters read their sampled input; AI fighters (mooks) carry
       // their own fabricated input dict on f.aiIn (same shape as keyboard).
       const inp = f.inputKey ? this.lastIn[f.inputKey] : (f.aiIn || {});
@@ -324,12 +348,25 @@ class FightScene extends Phaser.Scene {
     g.fillStyle(0x000000, 0.55); g.fillRect(pad - 4, 28 - 4, barW + 8, barH + 8);
     g.fillStyle(0x22282e, 1); g.fillRect(pad, 28, barW, barH);
     g.fillStyle(0xf2b705, 1); g.fillRect(pad, 28, barW * this.p1.health / 100, barH);
-    // P2 (right, drains left-to-right).
+    // P2 (right, drains left-to-right). In arena mode: mook counter instead.
     const rx = 1280 - pad - barW;
-    g.fillStyle(0x000000, 0.55); g.fillRect(rx - 4, 28 - 4, barW + 8, barH + 8);
-    g.fillStyle(0x22282e, 1); g.fillRect(rx, 28, barW, barH);
-    const w2 = barW * this.p2.health / 100;
-    g.fillStyle(0xff5a5a, 1); g.fillRect(rx + barW - w2, 28, w2, barH);
+    const liveMooks = this.fighters.filter(f => f.ai && !f.dead).length;
+    if (this.mookCount > 0 && liveMooks > 0) {
+      g.fillStyle(0x000000, 0.55); g.fillRect(rx - 4, 28 - 4, barW + 8, barH + 8);
+      g.fillStyle(0x22282e, 1); g.fillRect(rx, 28, barW, barH);
+      g.fillStyle(0xff8f5a, 1); g.fillRect(rx + barW - barW * liveMooks / Math.max(1, this.mookCount), 28,
+        barW * liveMooks / Math.max(1, this.mookCount), barH);
+      if (!this.mookLabel) {
+        this.mookLabel = this.add.text(rx + 8, 30, '', { fontFamily: 'monospace', fontSize: '15px', color: '#0b0b10' });
+        this.mookLabel.setScrollFactor(0);
+      }
+      this.mookLabel.setText('MOOKS ' + liveMooks).setX(rx + 8);
+    } else if (this.mookCount === 0) {
+      g.fillStyle(0x000000, 0.55); g.fillRect(rx - 4, 28 - 4, barW + 8, barH + 8);
+      g.fillStyle(0x22282e, 1); g.fillRect(rx, 28, barW, barH);
+      const w2 = barW * this.p2.health / 100;
+      g.fillStyle(0xff5a5a, 1); g.fillRect(rx + barW - w2, 28, w2, barH);
+    }
     // Labels.
     this.labels || this.makeLabels();
   }

@@ -411,6 +411,17 @@ class Fighter {
     };
   }
 
+  // KO: sim/render skip via dead flag (roster loops). Proper ragdoll fly-out
+  // is a separate TODO; v0 keeps the body pinned in the hurt pose at 0 hp.
+  ko() {
+    this.dead = true;
+    this.currentAttack = null;
+    this.hitboxes.length = 0;
+    this.gfx.clear();
+    this.body.setVelocityX(0);
+    if (this.ai) this.aiIn = {};   // brain hands off permanently
+  }
+
   // Called by the scene when one of this fighter's hitboxes overlaps an
   // opponent's hurtbox.
   takeHit(hb, fromFacing) {
@@ -418,6 +429,7 @@ class Fighter {
     // Interrupt a dash BEFORE knockback is applied (endDash clamps speed).
     if (this.state === 'dash') this.endDash();
     this.health = Math.max(0, this.health - hb.damage);
+    if (this.health === 0 && !this.dead) this.ko();   // mooks KO; players too (duel KO later)
     this.hitstun = hb.knock.hitstun;
     this.facing = -fromFacing; // face the attacker
     this.body.setVelocityX(fromFacing * hb.knock.x);
