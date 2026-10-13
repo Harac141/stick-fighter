@@ -24,6 +24,7 @@
 window.LEVELS = {
   // The current flat arena as an explicit level.
   dojo: {
+    desc: 'Flat concrete — where it all started. No cover, just fists.',
     width: 2600,
     sky: [0x101423, 0x1b2440],
     p1x: 200, respawnX: 160,
@@ -38,6 +39,7 @@ window.LEVELS = {
   // the far side. NO PITS (user call: mooks walk into them and no knockback
   // pushes anyone in — the floor-gap mechanic stays dormant in the loader).
   rooftop: {
+    desc: 'Fire-escape columns and ledge snipers. Mind the tall walls.',
     width: 3600,
     sky: [0x141a2e, 0x33284e],
     p1x: 140, respawnX: 120,
@@ -60,6 +62,7 @@ window.LEVELS = {
   // Warehouse: crate columns at two heights, three ganged waves + a gunner
   // behind the last crates.
   warehouse: {
+    desc: 'Crate stacks at two heights. A sniper owns the tall crate.',
     width: 3200,
     sky: [0x121826, 0x223048],
     p1x: 160, respawnX: 140,
