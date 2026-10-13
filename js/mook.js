@@ -95,6 +95,41 @@ class MookAI {
     return best;
   }
 
+  // Segment (muzzle -> target chest) vs pillar boxes: false = cover blocks
+  // the shot. Mirrors stepBullets' pillar death rule, INCLUDING the muzzle
+  // grace band: a bullet survives pillar overlap for its first ~12 frames
+  // (~230px), so a block only counts if the shot is still inside a box past
+  // that band. Gunner therefore never trades shots with a wall.
+  hasLOS(f, t) {
+    const lv = f.scene.level;
+    if (!lv) return true;
+    const mx = f.x + f.facing * 46, my = f.y - 14;
+    const dx = t.x - mx, dy = (t.y - 8) - my;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 1) return true;
+    const ux = dx / dist, uy = dy / dist;
+    const GRACE = 240;   // px of pillar overlap the bullet eats for free
+    for (const p of lv.pillars) {
+      let t0 = 0, t1 = dist;
+      if (Math.abs(ux) < 1e-6) {
+        if (mx < p.x || mx > p.x + p.w) continue;          // outside x-span
+      } else {
+        let a = (p.x - mx) / ux, b = (p.x + p.w - mx) / ux;
+        if (a > b) { const s = a; a = b; b = s; }
+        t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+      }
+      if (Math.abs(uy) < 1e-6) {
+        if (my < p.top || my > f.scene.groundY) t1 = -1;   // outside y-span
+      } else {
+        let a = (p.top - my) / uy, b = (f.scene.groundY - my) / uy;
+        if (a > b) { const s = a; a = b; b = s; }
+        t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+      }
+      if (t0 <= t1 && t1 > GRACE) return false;
+    }
+    return true;
+  }
+
   think(fighters) {
     const f = this.f;
     const inp = (f.aiIn = {});   // rebuilt every step; falsy = key up
@@ -145,6 +180,9 @@ class MookAI {
         return;
       }
       if (!f.currentAttack && f.onGround) f.facing = dir;   // track the target
+      if (!f.onGround) f.facing = dir;   // NEVER fire backwards: an airborne
+                                         // sniper tracks the target too (no
+                                         // shots ever leave the wrong way)
       const fleeing = adx < this.fleeDist && sameLevel && f._grounded
                    && !f.currentAttack && !atEdge;
       if (fleeing) {
@@ -180,7 +218,13 @@ class MookAI {
         // running flips facing and shots would go backwards). Cap: only while
         // the target is roughly on-screen — no cross-level machine-gunning.
         this.dec = { mode: 'snipe' };
-        if (adx < 900 && !f.currentAttack && f.attackCooldown === 0 && --this.shootT <= 0) {
+        // Fire only when it's a CLEAN shot: target on-screen, cooldown clear,
+        // muzzle actually faces the target (flee/vault drive can flip facing —
+        // an aim-gate miss used to fall back to a backwards straight shot),
+        // and the pillar LOS ray is clear (no shooting into cover).
+        if (adx < 900 && !f.currentAttack && f.attackCooldown === 0
+            && f.facing === dir && this.hasLOS(f, t)
+            && --this.shootT <= 0) {
           this.shootT = 14 + (Math.random() * 18 | 0);
           inp.shoot = true;
         }
