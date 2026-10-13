@@ -51,19 +51,22 @@ class MookAI {
       backoffFrames: 22,   // post-attack breathing room (waves need gaps)
     }, opts);
     delete this.k.mgr;
-    // Gunner (levels.js knobs {weapon:'pistol'}): fights at range instead of
-    // melee — holds a band ~380px from the target and fires the shoot attack
-    // (real bullets, never hitscan). Melee knobs are overridden so it behaves
-    // like a marksman, not a mook holding a gun.
+    // Gunner = SNIPER (levels.js knobs {weapon:'pistol'}, spawned on a pillar
+    // top by zone {pillar:N}): holds position and fires (fast bullets, aimed
+    // at the target incl. vertical), backs off only when you get close, and
+    // vaults off the pillar if you climb onto it. Does NOT chase or mill —
+    // the user has to hunt him down (user spec).
     this.gunner = !!opts.weapon;
     if (this.gunner) {
       this.k.range = 380;           // preferred firing band center-to-center
-      this.k.dashChance = 0.08;     // doesn't melee-dash in
+      this.k.dashChance = 0;        // never dashes in
       this.k.heavyChance = 0;       // only shoot (pulse maps to inp.shoot)
-      this.k.jumpChance = 0;        // (jumps handled explicitly: hop blockers)
-      this.k.backoffFrames = 40;    // shoots, then sidesteps to re-aim
-      this.k.aggression = Math.max(this.k.aggression, 0.7);
-      this._lx = null;              // stuck-detection (wall hop) sample
+      this.k.jumpChance = 0;        // jumps only via explicit escape vault
+      this.k.aggression = 0;        // never commits to melee
+      this.fleeDist = opts.fleeDist || 200;   // back off inside this
+      this.climbDist = opts.climbDist || 95;  // target ON our pillar -> bail
+      this.vaultT = 0;              // >0 while vaulting (side-eject exempt window)
+      this.shootT = 30 + (Math.random() * 20 | 0);   // first-shot delay (readable)
     }
     f.health = this.k.hp;
     // Per-mook personality: jitter the knobs so a pack never moves in lockstep.
@@ -111,6 +114,79 @@ class MookAI {
     const dx = t.x - f.x;
     const adx = Math.abs(dx);
     const dir = dx >= 0 ? 1 : -1;
+
+    // ---- SNIPER (gunner): own brain, skips the melee state machine -------
+    // User spec: stationary marksman on a pillar; backs off only when you get
+    // close, otherwise holds position and fires. You have to hunt him down.
+    if (this.gunner) {
+      this.target = t;
+      this.stT++;
+      if (this._vaultCool > 0) this._vaultCool--;
+      if (this.vaultT > 0) {                  // escaping an overrun perch
+        this.vaultT--;
+        if (this.vaultDir > 0) inp.right = true; else inp.left = true;
+        inp.heldDir = this.vaultDir;
+        if (!f.airborne) { inp.jump = true; inp.jumpHeld = true; }
+        else inp.jumpHeld = true;
+        this.dec = { mode: 'vault' };
+        return;
+      }
+      const sameLevel = Math.abs(t.y - f.y) < 120;
+      const away = -dir;
+      // Cornered at a world edge = can't flee (stand and trade instead).
+      const atEdge = (f.sprite.x > f.scene.levelWidth - 70 && away > 0)
+                  || (f.sprite.x < 70 && away < 0);
+      if (sameLevel && adx < this.climbDist && f._grounded && !f.currentAttack) {
+        // Player climbing onto OUR perch: bail off the far side (don't get
+        // shot point-blank on someone else's high ground).
+        this.vaultDir = (t.x >= f.x) ? -1 : 1;   // away from the climber
+        this.vaultT = 55;
+        this.dec = { mode: 'vault' };
+        return;
+      }
+      if (!f.currentAttack && f.onGround) f.facing = dir;   // track the target
+      const fleeing = adx < this.fleeDist && sameLevel && f._grounded
+                   && !f.currentAttack && !atEdge;
+      if (fleeing) {
+        const atEdge2 = (f.sprite.x > f.scene.levelWidth - 70 && away > 0)
+                     || (f.sprite.x < 70 && away < 0);
+        // Flee-into-a-wall -> vault it (path-length sampler; see melee
+        // stuck block for why velocity can't be trusted near walls). Needs
+        // TWO consecutive pinned+wall samples (kills one-off misreads), has a
+        // cooldown, and NOT at a world edge — cornered means stand and trade.
+        if (!this._fT && (this._vaultCool || 0) === 0 && !atEdge2) {
+          this._fT = 10;
+          this._fh = this._fh || [];
+          this._fh.push(f.sprite.x);
+          if (this._fh.length > 4) this._fh.shift();
+          let path = 0;
+          for (let i2 = 1; i2 < this._fh.length; i2++)
+            path += Math.abs(this._fh[i2] - this._fh[i2 - 1]);
+          if (path <= 40 &&
+              f.scene.pillarSide(f.sprite.x + away * 30,
+                                 f.sprite.y + f.body.height / 2, 20)) {
+            if (this._wallSeen) {          // second consecutive sample: commit
+              this.vaultDir = away; this.vaultT = 55; this._vaultCool = 60;
+              this._wallSeen = false;
+            } else this._wallSeen = true;
+          } else this._wallSeen = false;
+        }
+        if (this._fT) this._fT--;
+        if (away > 0) inp.right = true; else inp.left = true;
+        inp.heldDir = away;
+        this.dec = { mode: 'flee' };
+      } else {
+        // Hold position; fire on the cooldown clock (never while fleeing:
+        // running flips facing and shots would go backwards). Cap: only while
+        // the target is roughly on-screen — no cross-level machine-gunning.
+        this.dec = { mode: 'snipe' };
+        if (adx < 900 && !f.currentAttack && f.attackCooldown === 0 && --this.shootT <= 0) {
+          this.shootT = 14 + (Math.random() * 18 | 0);
+          inp.shoot = true;
+        }
+      }
+      return;
+    }
 
     // ---- Engagement queue bookkeeping ----
     const holding = !this.mgr || this.mgr.holding(this);

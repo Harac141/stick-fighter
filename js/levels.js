@@ -14,10 +14,13 @@
 //              floor is SOLID — you bonk into the sides, mooks must hop them,
 //              the top is a landable slab. (User: floating platforms read
 //              wrong — everything stands on the ground now.)
-//   spawns     [{x, count, trigger?, knobs?}] mook zones. Without trigger the
-//              zone spawns at load; with trigger it spawns when P1 passes x.
-//              knobs merge into MookAI opts ({hp:24} = elite,
-//              {weapon:'pistol'} = gunner).
+//   spawns     [{x, count, trigger?, knobs?, pillar?}] mook zones. Without
+//              trigger the zone spawns at load; with trigger it spawns when
+//              P1 passes x. knobs merge into MookAI opts ({hp:24} = elite,
+//              {weapon:'pistol'} = sniper: holds still on his perch, flees
+//              when you close — hunt him down). pillar:<index> pins the zone
+//              to that entry of pillars[] and drops the count mooks ON TOP of
+//              it (x is then unused) — snipers belong up there.
 window.LEVELS = {
   // The current flat arena as an explicit level.
   dojo: {
@@ -50,7 +53,8 @@ window.LEVELS = {
       { x: 2250, count: 4, trigger: 1500 },
       { x: 3350, count: 4, trigger: 2400 },
       { x: 2050, count: 2, trigger: 1500, knobs: { hp: 24, aggression: 1.6 } }, // elites
-      { x: 2900, count: 1, trigger: 2400, knobs: { weapon: 'pistol' } },        // gunner
+      { x: 0, count: 1, trigger: 2400, knobs: { weapon: 'pistol' }, pillar: 2 }, // sniper on the ledge wall
+      { x: 0, count: 2, trigger: 1500, pillar: 1 },                 // perch guards on the tall column
     ],
   },
   // Warehouse: crate columns at two heights, three ganged waves + a gunner
@@ -71,7 +75,8 @@ window.LEVELS = {
       { x: 1100, count: 4 },
       { x: 2000, count: 4, trigger: 900 },
       { x: 2850, count: 4, trigger: 1900 },
-      { x: 2600, count: 1, trigger: 1900, knobs: { weapon: 'pistol' } },
+      { x: 0, count: 1, trigger: 1900, knobs: { weapon: 'pistol' }, pillar: 4 }, // sniper on the tall crate
+      { x: 0, count: 2, trigger: 900, pillar: 2 },                   // perch guards on the big crate
     ],
   },
 };

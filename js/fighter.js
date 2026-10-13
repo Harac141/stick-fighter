@@ -146,7 +146,7 @@ const CFG = {
       startup: 16, active: 3, recovery: 24,     // long aim = readable telegraph
       damage: 8, pose: 'shoot',
       box:   { x: 40, y: -14, w: 2, h: 2 },     // muzzle marker only (bullet does the damage)
-      fire:  { speed: 660, y: -14 },             // px/s, chest height, no gravity (reads as a bullet)
+      fire:  { speed: 1150, y: -14 },            // px/s (user: gunner bullets FAST); no gravity — straight line reads as a bullet
       knock: { x: 180, y: -120, hitstun: 12 },  // bullet pop on the victim
       cooldown: 34,
     },
@@ -527,9 +527,23 @@ class Fighter {
     if (atk.fire && this.attackFrame === atk.startup + 1 && !this.firedShot) {
       this.firedShot = true;
       this.muzzleT = 4;   // flash frames (render-side)
+      // Aim: gunners acquire a vertical line so a sniper on a pillar actually
+      // shoots DOWN at a runner on the floor (flat shots would sail over).
+      // Speed comes from the target distance so steep shots don't flatten out.
+      let vy = 0, vx2;
+      const t = this.ai && this.ai.gunner ? (this.ai.target || null) : null;
+      if (t && !t.dead) {
+        const dx = t.x - this.x, dy = (t.y - 8) - (this.y + atk.fire.y);
+        if (dx * this.facing > 0) {                      // only aim where we face
+          const dist = Math.hypot(dx, dy);
+          const sp = atk.fire.speed;
+          vx2 = (dx / dist) * sp;
+          vy = (dy / dist) * sp;
+        }
+      }
       this.scene.spawnBullet({
         x: this.x + this.facing * 46, y: this.y + atk.fire.y,
-        vx: this.facing * atk.fire.speed,
+        vx: (vx2 !== undefined ? vx2 : this.facing * atk.fire.speed), vy,
         damage: atk.damage,
         knock: { x: atk.knock.x, y: atk.knock.y, hitstun: atk.knock.hitstun },
         owner: this,

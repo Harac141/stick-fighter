@@ -165,13 +165,13 @@ class FightScene extends Phaser.Scene {
       // driving into it (only when NOT seated on top; standing bodies skip via
       // the bodyBottom<=top guard inside pillarSide). Runs even when grounded
       // so a body-blocked mook leaning into a column stays pinned, not sunk.
-      // RISING bodies are exempt: a jump beside/into a wall climbs it instead
-      // of getting its vx zeroed every tick (without this, no jump can ever
-      // clear a tall column — ejection cancels all horizontal drive until the
-      // feet are above the top, which is exactly what the jump is trying to
-      // reach). Falling into a wall face still ejects normally.
-      const rising = b.enable && b.velocity.y < -40;
-      const side = rising ? null : this.pillarSide(f.sprite.x, f.sprite.y + CFG.body.height / 2, half);
+      // RISING exemption is ONLY for AI vaulting (mook hop / sniper escape):
+      // a vaulting body needs its horizontal drive to survive the climb. The
+      // player is never exempt — pillar sides block a jumping player (user:
+      // "the sides don't block me when I'm jumping").
+      const vaulting = f.ai && f.ai.dec &&
+        (f.ai.dec.mode === 'hop' || f.ai.dec.mode === 'vault');
+      const side = vaulting ? null : this.pillarSide(f.sprite.x, f.sprite.y + CFG.body.height / 2, half);
       if (side) {
         f.sprite.x += side.push;
         if (b.enable && side.wallDir && b.velocity.x * side.wallDir > 0) b.setVelocityX(0);
@@ -332,7 +332,8 @@ class FightScene extends Phaser.Scene {
       for (const sp of this.level.spawns) this.mookCount += (sp.count || 1);
       for (const sp of this.level.spawns) {
         const zone = { x: sp.x, count: sp.count || 1, knobs: sp.knobs || {},
-                       trigger: sp.trigger != null ? sp.trigger : null, done: false };
+                       trigger: sp.trigger != null ? sp.trigger : null,
+                       pillar: sp.pillar != null ? sp.pillar : null, done: false };
         this.spawnZones.push(zone);
         if (zone.trigger == null) this.fireZone(zone);
       }
@@ -495,11 +496,20 @@ class FightScene extends Phaser.Scene {
     }
     const px = this.p1 ? this.p1.sprite.x : 0;
     for (let i = 0; i < zone.count; i++) {
-      const x = Math.max(60, Math.min(this.levelWidth - 60,
-        zone.x + i * 56 + (Math.random() * 36 - 18)));
-      // Spawn on whatever solid surface is over that x (floor or a pillar top).
-      const top = this.surfaceUnder(x, this.groundY);
-      const surfaceY = (top === null) ? this.groundY : top;
+      let x, surfaceY;
+      if (zone.pillar != null) {
+        // Zone pinned to a pillar: mooks stand ON TOP (snipers, perch guards).
+        const p = this.level.pillars[zone.pillar];
+        x = p.x + 24 + (p.w - 48) * (zone.count === 1 ? 0.5 : i / (zone.count - 1))
+            + (Math.random() * 10 - 5);
+        surfaceY = p.top;
+      } else {
+        x = Math.max(60, Math.min(this.levelWidth - 60,
+          zone.x + i * 56 + (Math.random() * 36 - 18)));
+        // Spawn on whatever solid surface is over that x (floor or a pillar top).
+        const top = this.surfaceUnder(x, this.groundY);
+        surfaceY = (top === null) ? this.groundY : top;
+      }
       const face = (px < x) ? -1 : 1;
       const k = zone.knobs || {};
       // Colour-codes the roster: gunners yellow, elites gold, mooks orange.
@@ -530,7 +540,7 @@ class FightScene extends Phaser.Scene {
   spawnBullet(o) {
     if (!this.bullets) this.bullets = [];
     this.bullets.push({
-      x: o.x, y: o.y, vx: o.vx,
+      x: o.x, y: o.y, vx: o.vx, vy: o.vy || 0,
       damage: o.damage, knock: o.knock, owner: o.owner,
       life: 110,          // frames (~1.8s) — despawn so off-screen shots die
       swatted: 0,         // deflection counter (render + eventual katana flair)
@@ -543,12 +553,20 @@ class FightScene extends Phaser.Scene {
     for (const bl of bs) {
       if (bl.dead) continue;
       bl.x += bl.vx * SIM_STEP;
+      bl.y += (bl.vy || 0) * SIM_STEP;
       bl.life--;
       if (bl.life <= 0) { bl.dead = true; continue; }
       // Walls: bullets die on the world edges (pillars block them too).
-      if (bl.x < 4 || bl.x > this.levelWidth - 4) { bl.dead = true; continue; }
+      if (bl.x < 4 || bl.x > this.levelWidth - 4 || bl.y > this.groundY + 30) {
+        bl.dead = true; continue;   // y: die ON the floor, don't tunnel under it
+      }
       const lv = this.level;
-      if (lv) for (const p of lv.pillars) {
+      // Grace: first ~12 frames skip pillar collision so a sniper standing on
+      // a wide crate can shoot DOWN at someone beside it without his own
+      // perch eating the bullet (1150px/s clears ~230px in 12 frames — enough
+      // to exit the box he's standing on). Horizontal shots are unaffected:
+      // they spawn above/outside neighbouring boxes and collide after grace.
+      if (lv && bl.life <= 98) for (const p of lv.pillars) {
         if (bl.x >= p.x && bl.x <= p.x + p.w && bl.y >= p.top && bl.y <= this.groundY) {
           bl.dead = true;   // sparks: keep for a beat as a impact stub
           break;
@@ -584,7 +602,8 @@ class FightScene extends Phaser.Scene {
         if (bl.x >= hb.x && bl.x <= hb.x + hb.w && bl.y >= hb.y && bl.y <= hb.y + hb.h) {
           bl.swatted++;
           bl.vx = -bl.vx * 0.65;                 // batted back, slower
-          bl.y -= 6 + Math.random() * 10;        // flipped up off the line
+          bl.vy = -(bl.vy || 0) * 0.65 - 40;     // flipped upward off the line (aimed shots included)
+          bl.y -= 6 + Math.random() * 10;        // lifted off the line
           bl.owner = null;                       // defanged from its shooter
           bl.life = Math.min(bl.life, 45);
           if (bl.swatted >= 2) bl.dead = true;   // swat twice = swatted away
@@ -604,7 +623,16 @@ class FightScene extends Phaser.Scene {
     for (const bl of this.bullets) {
       const c = bl.swatted ? 0x9ad0ff : 0xffe08a;   // swatted ones read blue
       g.fillStyle(c, 1);
-      g.fillRoundedRect(bl.x - 5, bl.y - 2, 10, 4, 2);   // tracer, not a circle
+      const sp = Math.hypot(bl.vx, bl.vy || 0);
+      if (sp > 1) {
+        // oriented tracer along the velocity line (sniper shots are aimed)
+        const nx = bl.vx / sp, ny = (bl.vy || 0) / sp;
+        g.fillTriangle(bl.x - nx * 6 - ny * 1.6, bl.y - ny * 6 + nx * 1.6,
+                       bl.x - nx * 6 + ny * 1.6, bl.y - ny * 6 - nx * 1.6,
+                       bl.x + nx * 6, bl.y + ny * 6);
+      } else {
+        g.fillRoundedRect(bl.x - 5, bl.y - 2, 10, 4, 2);   // dead tracer
+      }
     }
   }
 
