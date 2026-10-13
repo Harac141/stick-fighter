@@ -8,16 +8,16 @@
 //   sky        [topColor, bottomColor] gradient
 //   p1x        player start x            respawnX  pit-recovery point
 //   floors     [{x, w}] solid slabs, top at groundY; gaps between them = PITS
-//   platforms  [{x, w, y}] ONE-WAY slabs: land from above, jump through from
-//              below/sides. y = height above groundY (negative = up).
+//              (dormant: no shipped level uses gaps — see rooftop note).
+//   pillars    [{x, w, y}] SOLID columns standing ON the floor. Top at height
+//              y above groundY (negative = up); the box from top down to the
+//              floor is SOLID — you bonk into the sides, mooks must hop them,
+//              the top is a landable slab. (User: floating platforms read
+//              wrong — everything stands on the ground now.)
 //   spawns     [{x, count, trigger?, knobs?}] mook zones. Without trigger the
 //              zone spawns at load; with trigger it spawns when P1 passes x.
-//              knobs merge into MookAI opts (e.g. {hp: 24} for an elite).
-//
-// PITS decision (todocombat open question): falling into a pit costs the
-// player 25 hp + a reposition to their last safe footing; a mook who falls
-// dies outright (ragdolls into the void). Levels decide where pits are by
-// leaving floor gaps.
+//              knobs merge into MookAI opts ({hp:24} = elite,
+//              {weapon:'pistol'} = gunner).
 window.LEVELS = {
   // The current flat arena as an explicit level.
   dojo: {
@@ -25,52 +25,53 @@ window.LEVELS = {
     sky: [0x101423, 0x1b2440],
     p1x: 200, respawnX: 160,
     floors: [{ x: 0, w: 2600 }],
-    platforms: [],
+    pillars: [],
     spawns: [
       { x: 1400, count: 4 },
       { x: 2150, count: 4, trigger: 900 },
     ],
   },
-  // Rooftops: fire-escape ledges, trigger-gated waves, two elites guarding
-  // the far spawn. NO PITS (user: mooks walk into them and knockback can't
-  // push anyone in — pit-gap floors are retired until enemies can interact
-  // with them; the floor-gap mechanic stays available in the loader).
+  // Rooftops: fire-escape columns, trigger-gated waves, elites + a gunner on
+  // the far side. NO PITS (user call: mooks walk into them and no knockback
+  // pushes anyone in — the floor-gap mechanic stays dormant in the loader).
   rooftop: {
     width: 3600,
     sky: [0x141a2e, 0x33284e],
     p1x: 140, respawnX: 120,
     floors: [{ x: 0, w: 3600 }],
-    platforms: [
-      { x: 1150, w: 230, y: -110 },   // step up
-      { x: 1440, w: 270, y: -190 },   // high route (over the mook scrum below)
-      { x: 1870, w: 230, y: -105 },   // step down
-      { x: 2520, w: 310, y: -205 },   // ledge wall to hop
-      { x: 2990, w: 240, y: -115 },
+    pillars: [
+      { x: 1150, w: 150, y: -110 },   // stair column
+      { x: 1700, w: 170, y: -190 },   // tall column: hop it or fight under it
+      { x: 2520, w: 200, y: -205 },   // ledge wall
+      { x: 2990, w: 150, y: -115 },
     ],
     spawns: [
-      { x: 1150, count: 3 },
+      { x: 1000, count: 3 },          // left of the stair column (don't spawn inside it)
       { x: 2250, count: 4, trigger: 1500 },
       { x: 3350, count: 4, trigger: 2400 },
       { x: 2050, count: 2, trigger: 1500, knobs: { hp: 24, aggression: 1.6 } }, // elites
+      { x: 2900, count: 1, trigger: 2400, knobs: { weapon: 'pistol' } },        // gunner
     ],
   },
-  // Warehouse: no pits, crate platforms at two heights, three ganged waves.
+  // Warehouse: crate columns at two heights, three ganged waves + a gunner
+  // behind the last crates.
   warehouse: {
     width: 3200,
     sky: [0x121826, 0x223048],
     p1x: 160, respawnX: 140,
     floors: [{ x: 0, w: 3200 }],
-    platforms: [
-      { x: 700,  w: 360, y: -150 },
-      { x: 1030, w: 160, y: -70 },
-      { x: 1500, w: 420, y: -200 },
-      { x: 2030, w: 160, y: -70 },
-      { x: 2420, w: 360, y: -150 },
+    pillars: [
+      { x: 700,  w: 120, y: -150 },
+      { x: 1030, w: 110, y: -70 },
+      { x: 1500, w: 260, y: -200 },   // big crate stack: climb or go round
+      { x: 2030, w: 110, y: -70 },
+      { x: 2420, w: 120, y: -150 },
     ],
     spawns: [
       { x: 1100, count: 4 },
       { x: 2000, count: 4, trigger: 900 },
       { x: 2850, count: 4, trigger: 1900 },
+      { x: 2600, count: 1, trigger: 1900, knobs: { weapon: 'pistol' } },
     ],
   },
 };

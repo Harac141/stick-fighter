@@ -51,6 +51,20 @@ class MookAI {
       backoffFrames: 22,   // post-attack breathing room (waves need gaps)
     }, opts);
     delete this.k.mgr;
+    // Gunner (levels.js knobs {weapon:'pistol'}): fights at range instead of
+    // melee — holds a band ~380px from the target and fires the shoot attack
+    // (real bullets, never hitscan). Melee knobs are overridden so it behaves
+    // like a marksman, not a mook holding a gun.
+    this.gunner = !!opts.weapon;
+    if (this.gunner) {
+      this.k.range = 380;           // preferred firing band center-to-center
+      this.k.dashChance = 0.08;     // doesn't melee-dash in
+      this.k.heavyChance = 0;       // only shoot (pulse maps to inp.shoot)
+      this.k.jumpChance = 0;        // (jumps handled explicitly: hop blockers)
+      this.k.backoffFrames = 40;    // shoots, then sidesteps to re-aim
+      this.k.aggression = Math.max(this.k.aggression, 0.7);
+      this._lx = null;              // stuck-detection (wall hop) sample
+    }
     f.health = this.k.hp;
     // Per-mook personality: jitter the knobs so a pack never moves in lockstep.
     this.k.range += (Math.random() * 2 - 1) * 12;
@@ -112,13 +126,67 @@ class MookAI {
 
     // ---- State transitions (checked on decision ticks, held between) ----
     this.stT++;   // frames-in-state advances EVERY step (not per decision tick)
-    if (--this.decT <= 0) {
+    // ---- Stuck-at-a-pillar-wall hop (ALL mooks, gunners included): pressing
+    // toward a target with no real x-progress while a solid column is right
+    // ahead = pinned against its side -> hop it. Stuck is POSITION-based
+    // (sampled x), not velocity: arcade sawtooths vx every other step (drive
+    // to 250, then wall-eject zeroes it), so a vx threshold oscillates and
+    // never accumulates. Gated on a real pillar ahead (not a body-block wall)
+    // so crowd shoving doesn't cause hop-fests.
+    {
+      const pressing = this.dec && (this.dec.mode === 'close' || this.dec.mode === 'band'
+                                    || this.dec.mode === 'attack');
+      if (!this._sxT) {                       // sample x every ~10 ticks
+        this._sxT = 10;
+        // Pinned = total path length over the last 4 samples stays tiny.
+        // A wall-pinned body OSCILLATES (drive step then wall-eject: 1472 <->
+        // 1480), so |x - x_prev| alone spikes and reset the counter every
+        // other sample; net displacement over 4 samples cancels the
+        // oscillation and stays 0, while real walking nets ~160.
+        this._hist = this._hist || [];
+        this._hist.push(f.sprite.x);
+        if (this._hist.length > 4) this._hist.shift();
+        let path = 0;
+        for (let i = 1; i < this._hist.length; i++) path += Math.abs(this._hist[i] - this._hist[i - 1]);
+        const wallAhead = !f.airborne && pressing && path <= 40
+          && !!f.scene.pillarSide(f.sprite.x + (this.dec.dir || this.facing) * 30,
+                                  f.sprite.y + f.body.height / 2, 20);
+        this.stuckT = wallAhead ? (this.stuckT || 0) + 1 : 0;
+      }
+      this._sxT--;
+    }
+    // ~1.3 s of pinned samples -> run-up hop (fires on any tick; dec is a
+    // plain field read every step, no need to wait for a decision refresh).
+    // A plain vertical hop fails: side-solidarity ejects the climber at the
+    // wall face (vx zeroed every tick until the feet clear the top, which the
+    // jump apex can't reach for tall columns) -> the run-up sets the vault.
+    if ((this.stuckT || 0) > 8) {
+      this.dec = { mode: 'hop', dir: (this.dec.dir || dir || f.facing) };
+      this.hopT = 0;
+      this.stuckT = 0;
+    }
+    if (--this.decT <= 0 && this.dec.mode !== 'hop') {
       this.decT = this.k.react + (Math.random() * 8 | 0);
       switch (this.st) {
         case 'wait':
           if (this.stT > 0) { this.st = 'approach'; this.stT = 0; }
           break;
         case 'approach': {
+          // Gunner: hold the firing band instead of closing to melee.
+          if (this.gunner) {
+            if (adx > this.k.range + 120 && Math.random() < 0.12 &&
+                f.dashCooldown === 0 && f.onGround) {
+              this.dec = { mode: 'dash', dir };    // reposition dash, not attack
+              this.sustainT = 10;
+            } else if (adx > this.k.range + 30) {
+              this.dec = { mode: 'close', dir };
+            } else {
+              this.dec = { mode: 'band', dir };    // marksman pocket (back off too!)
+            }
+            if (this.stT > 40) { this.st = 'attack'; this.stT = 0; this.pulse = null;
+                                 this.committed = false; this.dec = { mode: 'attack' }; }
+            break;
+          }
           // Queue-first: a free slot + aggression commits from anywhere (the
           // attack state itself closes the gap). No slot -> hold the ring.
           const wantAttack = Math.random() < this.k.aggression;
@@ -167,7 +235,8 @@ class MookAI {
       // Commit an attack the moment we're in range and facing is honest.
       if (this.st === 'attack' && !this.pulse && !f.currentAttack &&
           adx <= this.k.range + 14 && f.facing === dir && f.attackCooldown === 0) {
-        this.pulse = Math.random() < this.k.heavyChance ? 'heavy' : 'jab';
+        // Gunner: fires bullets (input.shoot -> 'shoot' attack -> spawnBullet).
+        this.pulse = this.gunner ? 'shoot' : (Math.random() < this.k.heavyChance ? 'heavy' : 'jab');
       }
     }
 
@@ -203,6 +272,20 @@ class MookAI {
         inp.jump = !f.airborne; inp.jumpHeld = true;
         if (!f.airborne) this.dec = { mode: 'close', dir };
         break;
+      case 'hop': {
+        // Wall vault: hold-press toward the target and jump with full height.
+        // Rising bodies are exempt from pillar side-ejection (main.js), so the
+        // horizontal drive survives the climb and the swept landing catches
+        // the column top. (The earlier back-up-then-charge variant fired the
+        // jump while backing away and landed on the near side.)
+        this.hopT = (this.hopT || 0) + 1;
+        press(this.dec.dir);
+        if (!f.airborne) { inp.jump = true; inp.jumpHeld = true; }
+        else inp.jumpHeld = true;
+        if (f._grounded && this.hopT > 8) this.dec = { mode: 'close', dir };
+        else if (this.hopT > 120) this.dec = { mode: 'close', dir };   // bail
+        break;
+      }
       case 'attack':
         // Keep the approach honest while facing settles; pulse fires once.
         if (f.facing !== dir || adx > this.k.range) press(dir);

@@ -135,9 +135,20 @@ const CFG = {
       startup: 2, active: 5, recovery: 10,
       damage: 9, pose: 'dash',
       box:   { x: 30, y: -8, w: 48, h: 30 },    // shoulder check
-      knock: { x: 140, y: -280, hitstun: 22 },
+      knock: { x: 140, y: -280, hitstun: 22 },  // knockback scales with dash speed
       knockScale: true,                         // + speed*0.8: 560 dash slams across arena
       cooldown: 10,
+    },
+    // Pistol (gunner mooks only; AI sets input.shoot). NOT hitscan: firing
+    // spawns a travelling projectile (scene.spawnBullet) so bullets are
+    // physical things a katana (future) — or any hitbox today — can swat.
+    shoot: {
+      startup: 16, active: 3, recovery: 24,     // long aim = readable telegraph
+      damage: 8, pose: 'shoot',
+      box:   { x: 40, y: -14, w: 2, h: 2 },     // muzzle marker only (bullet does the damage)
+      fire:  { speed: 660, y: -14 },             // px/s, chest height, no gravity (reads as a bullet)
+      knock: { x: 180, y: -120, hitstun: 12 },  // bullet pop on the victim
+      cooldown: 34,
     },
   },
 };
@@ -187,13 +198,13 @@ class Fighter {
     this.wallContact = false;  // scene sets true when body-blocked by opponent
     // ---- Level ground state (scene.resolveGround owns these; see main.js) ----
     this._plat = null;         // top-y of the surface we're standing on, or null
-    this._platSolid = false;   // floors[] true (no drop-through), platforms[] false
     this._prevFeet = null;     // swept ground-contact check
-    this.dropT = 0;            // frames of one-way pass-through (down+jump)
     this.lastSafeX = null;     // pit-recovery point (last place we had footing)
     this._grounded = false;    // scene.resolveGround owns (levels: any surface)
-    this._platX = null; this._platX2 = null;  // slab span we're riding (edge fall)
     this.invuln = 0;           // frames of hit-invulnerability (pit recovery)
+    this.weapon = null;        // 'pistol' (gunner mook; AI + render + bullet owner)
+    this.muzzleT = 0;          // muzzle-flash frames (set on fire, ticked on sim step)
+    this.firedShot = false;    // one bullet per shoot swing
     this.wallBlockDir = 0;     // +1/-1: direction the opponent is blocking
     // Airborne pose parameter: 0 = tuck (launch), 1 = reach (land). EASED on
     // the fixed sim step toward the vy-derived target — NOT read directly
@@ -253,6 +264,7 @@ class Fighter {
     if (this.dashCooldown > 0) this.dashCooldown--;
     if (this.attackCooldown > 0) this.attackCooldown--;
     if (this.invuln > 0) this.invuln--;
+    if (this.muzzleT > 0) this.muzzleT--;
 
     if (this.hitstun > 0) {
       this.hitstun--;
@@ -387,12 +399,6 @@ class Fighter {
 
     // ---- Jump (variable height) ----
     if (input.jump && !this.airborne) {
-      // Drop-through: DOWN + JUMP on a one-way platform passes through
-      // (levels.js platforms[]; floors[] are solid and ignore this).
-      if (input.down && this.onGround && this._plat !== null && !this._platSolid) {
-        this.dropT = 10;          // ~1/6 s of pass-through — clears the slab
-        this._plat = null; this._grounded = false;
-      }
       if (this.state === 'dash') {
         // Dash-jump: keep horizontal velocity exactly as-is; only arm cooldown.
         this.dashCooldown = CFG.dash.cooldown;
@@ -437,6 +443,9 @@ class Fighter {
   //   air W+J               -> uppercut (mid-air pop)
   //   during dash-burst J/K -> dashatk  (shoulder check, speed-scaled slam)
   selectAttack(input) {
+    // Gunner fire (AI sets input.shoot; stays off the keyboard for players
+    // until guns are a player weapon). Bypasses the two-button grammar.
+    if (input.shoot) return 'shoot';
     const H = !!input.heavy, L = !!input.jab;
     if (!H && !L) return null;
     if (this.state === 'dash' && this.dashTimer > 0) return 'dashatk';
@@ -457,6 +466,7 @@ class Fighter {
     this.currentAttack = name;
     this.attackFrame = 0;
     this.hitConfirmed = false;
+    this.firedShot = false;   // one bullet per shoot swing (armed here, set on fire)
     // Snap the anticipation pose (punches must NOT smear in), but let the
     // retraction at the END blend out smoothly back to guard/run.
     this._snapNext = true;
@@ -511,6 +521,21 @@ class Fighter {
     // Multi-hit (hitFrames = [f1, f2]): each frame opens a fresh 2-frame
     // window with its own hit-landed flag — the cartwheel's tick-then-pop.
     this.hitboxes.length = 0;
+    // Gun: the FIRST active frame spawns the bullet (the muzzle-flash frame).
+    // Bullets are real travelling objects (scene.spawnBullet) — NOT hitscan —
+    // so a hitbox (future katana swipe, any attack today) can swat them.
+    if (atk.fire && this.attackFrame === atk.startup + 1 && !this.firedShot) {
+      this.firedShot = true;
+      this.muzzleT = 4;   // flash frames (render-side)
+      this.scene.spawnBullet({
+        x: this.x + this.facing * 46, y: this.y + atk.fire.y,
+        vx: this.facing * atk.fire.speed,
+        damage: atk.damage,
+        knock: { x: atk.knock.x, y: atk.knock.y, hitstun: atk.knock.hitstun },
+        owner: this,
+      });
+    }
+    if (this.currentAttack !== 'shoot') this.firedShot = false;
     if (atk.hitFrames) {
       for (const hf of atk.hitFrames) {
         if (this.attackFrame === hf) this.hitConfirmed = false;  // new window
@@ -879,6 +904,19 @@ class Fighter {
     g.lineBetween(pose.hip.x, pose.hip.y, pose.kneeB.x, pose.kneeB.y);
     g.lineBetween(pose.kneeB.x, pose.kneeB.y, pose.footB.x, pose.footB.y);
 
+    // Gunner: pistol in the front hand (a stub off the hand along facing);
+    // muzzle flash on the shot frames (muzzleT ticks on the sim step).
+    if (this.weapon === 'pistol') {
+      const hx = pose.handB.x, hy = pose.handB.y;   // handB == front hand (see return map)
+      g.lineStyle(3, 0xcfd6e6, 1);
+      g.lineBetween(hx, hy, hx + f * 12, hy);
+      g.lineBetween(hx, hy, hx - f * 3, hy + 7);   // grip
+      if (this.muzzleT > 0) {
+        g.fillStyle(0xffe08a, 1);
+        g.fillCircle(hx + f * 16, hy, 4.5);
+      }
+    }
+
     // Debug boxes: hurtbox (cyan) + active hitbox (red).
     if (Fighter.debug) {
       g.lineStyle(1, 0x36c5ff, 0.9);
@@ -1076,6 +1114,9 @@ class Fighter {
         } else if (atk.pose === 'airjab') {     // compact, legs tuck slightly
           lean = 0.14;
           footF = P(f * 12, feetY - 8); footB = P(-f * 14, feetY - 12);
+        } else if (atk.pose === 'shoot') {      // gunner: feet planted, slight recoil lean
+          lean = act ? 0.10 : -0.03;
+          footF = P(f * 20, feetY); footB = P(-f * 22, feetY);
         } else if (fr <= atk.startup)      { lean = -0.06; hipY = feetY - 38;
           footF = P(f * 14, feetY); footB = P(-f * 18, feetY); }
         else if (act) { lean = 0.12; hipX = x + f * 2;
@@ -1202,6 +1243,10 @@ class Fighter {
       } else if (atk.pose === 'airjab') {         // short sharp forward poke
         if (act) { handF = P(f * 30, feetY - 64); handB = P(-f * 10, feetY - 66); }
         else { handF = P(f * 10, feetY - 62); handB = P(-f * 12, feetY - 64); }
+      } else if (atk.pose === 'shoot') {          // two-handed aim, gun at eye line
+        const aim = fr <= atk.startup ? Math.min(1, fr / Math.max(1, atk.startup)) : (act ? 1 : 0.75);
+        handF = P(f * (10 + 26 * aim), feetY - 62);
+        handB = P(f * (4 + 20 * aim), feetY - 58);  // support hand under the firing one
       } else if (fr <= atk.startup) {             // anticipation (jab/heavy)
         handF = P(f * 2, feetY - 60); handB = P(-f * 10, feetY - 64);
       } else if (act) {                           // impact + overshoot

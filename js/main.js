@@ -36,10 +36,11 @@ class FightScene extends Phaser.Scene {
       sky: lv.sky || [0x101423, 0x1b2440],
       p1x: lv.p1x != null ? lv.p1x : 200,
       respawnX: lv.respawnX != null ? lv.respawnX : (lv.p1x != null ? lv.p1x : 160),
-      // floors[] solid slabs (top at groundY, gaps = pits); platforms[] one-way.
+      // floors[] solid slabs (top at groundY, gaps = pits); pillars[] solid
+      // columns standing on the floor (top landable, sides are walls).
       floors: (lv.floors || []).map((f) => ({ x: f.x, w: f.w })),
-      platforms: (lv.platforms || []).map((p) => ({
-        x: p.x, w: p.w, top: this.groundY + (p.y || 0),
+      pillars: (lv.pillars || []).map((p) => ({
+        x: p.x, w: p.w, top: this.groundY + (p.y || 0), bottom: this.groundY,
       })),
       spawns: lv.spawns || [],
     };
@@ -55,31 +56,52 @@ class FightScene extends Phaser.Scene {
     return null;
   }
 
-  // Highest surface at or below footY: floors (solid) and platforms (one-way,
-  // only catch a falling foot; the caller decides pass-through via dropT).
+  // Highest SOLID surface at or below footY at x: floor slabs and pillar
+  // tops (both solid). Returns null when over a pit / beside a pillar with
+  // nothing under foot.
   surfaceUnder(x, footY) {
-    let top = null, solid = false;
     const lv = this.level;
+    let top = null;
     if (!lv) {
-      if (footY >= this.groundY - 0.01) { top = this.groundY; solid = true; }
+      if (footY >= this.groundY - 0.01) top = this.groundY;
     } else {
-      for (const f of lv.floors) {
-        if (x >= f.x && x <= f.x + f.w && footY >= this.groundY - 0.01
-            && (top === null || this.groundY > top)) { top = this.groundY; solid = true; }
-      }
-      for (const p of lv.platforms) {
-        if (x >= p.x && x <= p.x + p.w && footY >= p.top - 0.01
-            && (top === null || p.top > top)) { top = p.top; solid = false; }
-      }
+      for (const f of lv.floors)
+        if (x >= f.x && x <= f.x + f.w && footY >= this.groundY - 0.01)
+          top = (top === null) ? this.groundY : Math.max(top, this.groundY);
+      for (const p of lv.pillars)
+        if (x >= p.x && x <= p.x + p.w && footY >= p.top - 0.01)
+          top = (top === null) ? p.top : Math.max(top, p.top);
     }
-    return top === null ? null : { top, solid };
+    return top;
+  }
+
+  // Which pillar (if any) our body rect is overlapping on its SIDE (not on
+  // top). Returns { p, push } where push is the signed x correction to eject
+  // us, or null. A body counts as "on top" (=> no wall) when its feet are at
+  // or above the pillar top.
+  pillarSide(ctrX, bodyBottom, halfW) {
+    const lv = this.level;
+    if (!lv) return null;
+    for (const p of lv.pillars) {
+      // vertical overlap: must extend meaningfully below the top to be a wall
+      if (bodyBottom <= p.top + 4) continue;
+      if (bodyBottom < p.top) continue;
+      const bx0 = ctrX - halfW, bx1 = ctrX + halfW;
+      if (bx1 <= p.x || bx0 >= p.x + p.w) continue;   // no horizontal overlap
+      // eject to the nearer side
+      const leftPush = p.x - bx1;          // negative: move left to clear left edge
+      const rightPush = (p.x + p.w) - bx0; // positive: move right to clear right edge
+      const push = (ctrX < p.x + p.w / 2) ? (leftPush - 0.5) : (rightPush + 0.5);
+      return { p, push, wallDir: push > 0 ? -1 : 1 };  // wallDir = dir we were moving into
+    }
+    return null;
   }
 
   // One pass per sim tick AFTER the fighter loop (Phaser still integrates
   // positions on its own render-frame step; we own ALL grounding: floors,
-  // one-way platforms, pits — see the world-bounds height bump in create()).
-  // Swept check (prev feet -> new feet) so high-speed knockback can't tunnel
-  // through a thin platform.
+  // pillar tops, pillar side-walls, pits — see the world-bounds height bump
+  // in create()). Swept check (prev feet -> new feet) so high-speed knockback
+  // can't tunnel through a pillar top.
   resolveGround() {
     const centerYFor = (top) => top - CFG.body.height / 2;
     for (const f of this.fighters) {
@@ -87,65 +109,75 @@ class FightScene extends Phaser.Scene {
       if (f.dead) { this.ragdollGround(f); continue; }
       const b = f.body, half = CFG.body.width / 2;
       const x = f.sprite.x;
-      if (f.dropT > 0) f.dropT--;
       const feet = f.sprite.y + CFG.body.height / 2;
       const vy = b.enable ? b.velocity.y : 0;   // ragdoll bodies are disabled
       const prev = (f._prevFeet === null || f._prevFeet === undefined) ? feet : f._prevFeet;
       f._prevFeet = feet;
-      // Riding a surface? Only while actually SEATED near it (not rising:
-      // jump = vy strongly negative; not fast-falling: a real fall through
-      // the slab has vy in the hundreds), and while the slab still extends
-      // under us (walking off an edge drops normally). The generous +60 band
-      // exists because arcade re-adds gravity every RENDER frame while we
-      // snap per SIM step: a standing body drifts a few px below the top
-      // line between snaps, and re-snap-from-below is what keeps it seated.
-      // A genuine fall covers 60px at vy>=430, so it never falls in here.
+
+      // Riding a solid surface (floor slab or pillar top)? Only while actually
+      // SEATED near it (not rising, not fast-falling) and while the slab still
+      // extends under us (walking off an edge drops normally). The +60 band
+      // exists because arcade re-adds gravity every RENDER frame while we snap
+      // per SIM step: a standing body drifts below the top between snaps.
       let surf = null;
-      if (f._plat !== null && vy >= -1 && vy <= 90 && feet >= f._plat - 3 && feet <= f._plat + 60
-          && this.spanAt(f._plat, x, f._platSolid)) {
-        surf = { top: f._plat, solid: f._platSolid };
+      if (f._plat !== null && vy >= -1 && vy <= 90
+          && feet >= f._plat - 3 && feet <= f._plat + 60
+          && this.spanAt(f._plat, x)) {
+        surf = { top: f._plat };
       }
-      // One-way rule: only land when a FALLING foot swept through the top.
-      if (!surf && vy >= 0 && f.dropT <= 0) {
+      // Land: only when a FALLING foot swept through the surface top.
+      if (!surf && vy >= 0) {
         const lo = Math.min(prev, feet), hi = Math.max(prev, feet);
         const lv = this.level;
         if (lv) {
-          for (const p of lv.platforms) {
+          for (const p of lv.pillars) {
             if (x >= p.x - half && x <= p.x + p.w + half
                 && hi >= p.top - 0.01 && lo <= p.top + 0.01
-                && (surf === null || p.top > surf.top)) surf = { top: p.top, solid: false };
+                && (surf === null || p.top > surf.top)) surf = { top: p.top };
           }
-          // FLOOR snap is unconditional once feet are AT/BELOW the line and a
-          // slab is under us (solid slabs — the only way below the line is
-          // through it; a high-speed fall can straddle the sweep window, and
-          // once below it never re-crosses). Platforms keep the swept rule so
-          // jumps can pass up through them.
+          // Floor: unconditional snap once feet at/below the line + slab under
+          // us (a high-speed fall can straddle the sweep; once below it never
+          // re-crosses). Pillar tops keep the swept rule so jumps pass by.
           if (x >= 0 && x <= lv.width && hi >= this.groundY - 0.01) {
             for (const fl of lv.floors) {
               if (x >= fl.x - half * 0.5 && x <= fl.x + fl.w + half * 0.5) {
-                surf = { top: this.groundY, solid: true }; break;
+                surf = { top: this.groundY }; break;
               }
             }
           }
         } else if (hi >= this.groundY - 0.01 && lo <= this.groundY + 0.01) {
-          surf = { top: this.groundY, solid: true };
+          surf = { top: this.groundY };
         }
       }
       if (surf) {
-        f._plat = surf.top; f._platSolid = surf.solid;
-        f._platX = f._platX2 = null;   // recomputed below when seated
+        f._plat = surf.top;
         const cy = centerYFor(surf.top);
         if (f.sprite.y > cy) f.sprite.y = cy;
         if (b.enable && b.velocity.y > 0) b.setVelocityY(0);
         f._grounded = true;
-        // remember the slab span so the riding check can fall off its edge
-        const sp = this.spanAt(surf.top, x, surf.solid);
-        if (sp) { f._platX = sp.x0; f._platX2 = sp.x1; }
         if (!f.dead) f.lastSafeX = x;    // pit-recovery anchor (live feet only)
       } else {
         f._grounded = false;
         f._plat = null;
       }
+
+      // Pillar side-walls: solid — eject out of the column and kill velocity
+      // driving into it (only when NOT seated on top; standing bodies skip via
+      // the bodyBottom<=top guard inside pillarSide). Runs even when grounded
+      // so a body-blocked mook leaning into a column stays pinned, not sunk.
+      // RISING bodies are exempt: a jump beside/into a wall climbs it instead
+      // of getting its vx zeroed every tick (without this, no jump can ever
+      // clear a tall column — ejection cancels all horizontal drive until the
+      // feet are above the top, which is exactly what the jump is trying to
+      // reach). Falling into a wall face still ejects normally.
+      const rising = b.enable && b.velocity.y < -40;
+      const side = rising ? null : this.pillarSide(f.sprite.x, f.sprite.y + CFG.body.height / 2, half);
+      if (side) {
+        f.sprite.x += side.push;
+        if (b.enable && side.wallDir && b.velocity.x * side.wallDir > 0) b.setVelocityX(0);
+        b.updateFromGameObject();
+      }
+
       // Pit death / respawn (live fighters only — ragdolls handled above).
       const cy0 = centerYFor(this.groundY);
       if (f.sprite.y > cy0 + 60) {
@@ -155,25 +187,21 @@ class FightScene extends Phaser.Scene {
     }
   }
 
-  // Slab span containing x at a given surface top (edge-fall detection).
-  // The top arg MUST be honored on the floor branch too: floors all sit at
-  // groundY, so a stale _platSolid with a platform-height _plat (510) must
-  // NOT match the full-width floor span — that read as "slab still under
-  // us" forever and let a fighter walk off a platform into Wile E. Coyote
+  // Slab span (x0..x1) of the surface whose top is at `top` containing x —
+  // floor slabs and pillar tops are both solid landable surfaces now. MUST
+  // return null off the edge: a truthy fallback read as "slab still under
+  // us" forever and let a fighter walk off a pillar into Wile E. Coyote
   // air-standing until the next jump.
-  spanAt(top, x, solidFloor) {
-    if (solidFloor && top === this.groundY) {
-      for (const fl of (this.level ? this.level.floors : [{ x: 0, w: this.levelWidth }]))
+  spanAt(top, x) {
+    const lv = this.level;
+    const floors = lv ? lv.floors : [{ x: 0, w: this.levelWidth }];
+    if (top === this.groundY) {
+      for (const fl of floors)
         if (x >= fl.x && x <= fl.x + fl.w) return { x0: fl.x, x1: fl.x + fl.w };
-      for (const fl of (this.level ? this.level.floors : []))
-        if (x >= fl.x - 24 && x <= fl.x + fl.w + 24) return { x0: fl.x, x1: fl.x + fl.w };
       return null;
     }
-    for (const p of (this.level ? this.level.platforms : []))
-      if (p.top === top && x >= p.x - 32 && x <= p.x + p.w + 32) return { x0: p.x, x1: p.x + p.w };
-    // MUST return null off the edge: a truthy fallback here read as "slab
-    // still under us" forever, so walking off a platform kept the riding
-    // rule satisfied — Wile E. Coyote standing on air until a jump broke it.
+    for (const p of (lv ? lv.pillars : []))
+      if (p.top === top && x >= p.x && x <= p.x + p.w) return { x0: p.x, x1: p.x + p.w };
     return null;
   }
 
@@ -191,7 +219,7 @@ class FightScene extends Phaser.Scene {
     const x = (f.lastSafeX != null ? f.lastSafeX : (this.level ? this.level.respawnX : f.sprite.x));
     const cy = this.groundY - CFG.body.height / 2;
     f.sprite.body.reset(x, cy);
-    f._plat = this.groundY; f._platSolid = true; f._prevFeet = this.groundY;
+    f._plat = this.groundY; f._prevFeet = this.groundY;
     f._grounded = true;
     f.hitstun = Math.max(f.hitstun, 30);
     f.invuln = 33;            // ~0.55 s: land, blink, get up (resolveHits skips)
@@ -204,15 +232,17 @@ class FightScene extends Phaser.Scene {
   ragdollGround(f) {
     const rd = f.ragdoll;
     if (!rd || rd.settled) return;
-    const floor = this.floorAt(f.sprite.x);
-    const cy = (floor === null ? this.groundY : floor) - CFG.body.height / 2;
-    f._ragFloor = (floor === null) ? null : cy;
+    // Floor under the corpse: floor slab OR a pillar top (surfaceUnder owns
+    // both; null over a pit -> the corpse keeps falling and gets retired).
+    const top = this.surfaceUnder(f.sprite.x, f.sprite.y + CFG.body.height / 2);
+    const cy = (top === null ? this.groundY : top) - CFG.body.height / 2;
+    f._ragFloor = (top === null) ? null : cy;
     const v = f.body.velocity;
-    if (floor !== null && f.sprite.y >= cy - 0.5 && v.y >= 0) {
+    if (top !== null && f.sprite.y >= cy - 0.5 && v.y >= 0) {
       f.sprite.y = cy;
       if (v.y > 0) v.y = 0;
       f._ragGnd = true;
-    } else if (floor !== null && f.sprite.y >= cy - 0.5) {
+    } else if (top !== null && f.sprite.y >= cy - 0.5) {
       f._ragGnd = true;
     } else {
       f._ragGnd = false;
@@ -265,12 +295,16 @@ class FightScene extends Phaser.Scene {
         bg.lineBetween(s.x, this.groundY, s.x, this.groundY + 24);
         bg.lineBetween(s.x + s.w, this.groundY, s.x + s.w, this.groundY + 24);
       }
-      // One-way platforms: thinner slabs with a bright top line.
-      for (const p of this.level.platforms) {
-        bg.fillStyle(0x2a3050, 1);
-        bg.fillRect(p.x, p.top, p.w, 14);
+      // Pillars: solid columns standing ON the floor — sides are walls, tops
+      // are landable slabs (user: floating platforms read wrong).
+      for (const p of this.level.pillars) {
+        bg.fillStyle(0x232c4c, 1);
+        bg.fillRect(p.x, p.top, p.w, this.groundY - p.top);
         bg.lineStyle(3, 0x6f86c8, 1);
-        bg.lineBetween(p.x, p.top, p.x + p.w, p.top);
+        bg.lineBetween(p.x, p.top, p.x + p.w, p.top);        // landable top line
+        bg.lineStyle(1.5, 0x39456e, 1);
+        bg.lineBetween(p.x, p.top, p.x, this.groundY);       // side shading
+        bg.lineBetween(p.x + p.w, p.top, p.x + p.w, this.groundY);
       }
     }
     // Back wall lanes for dojo depth.
@@ -463,11 +497,16 @@ class FightScene extends Phaser.Scene {
     for (let i = 0; i < zone.count; i++) {
       const x = Math.max(60, Math.min(this.levelWidth - 60,
         zone.x + i * 56 + (Math.random() * 36 - 18)));
-      const floorY = (this.floorAt(x) !== null) ? this.floorAt(x) : this.groundY;
+      // Spawn on whatever solid surface is over that x (floor or a pillar top).
+      const top = this.surfaceUnder(x, this.groundY);
+      const surfaceY = (top === null) ? this.groundY : top;
       const face = (px < x) ? -1 : 1;
-      const m = new Fighter(this, x, floorY, face,
-        zone.knobs && zone.knobs.hp > 12 ? 0xffd166 : 0xff8f5a);   // elites tint gold
-      new MookAI(m, Object.assign({ mgr: this.eng }, zone.knobs || {}));
+      const k = zone.knobs || {};
+      // Colour-codes the roster: gunners yellow, elites gold, mooks orange.
+      const col = k.weapon ? 0xffe066 : (k.hp > 12 ? 0xffd166 : 0xff8f5a);
+      const m = new Fighter(this, x, surfaceY, face, col);
+      if (k.weapon) m.weapon = k.weapon;      // 'pistol' -> render + AI behaviour
+      new MookAI(m, Object.assign({ mgr: this.eng }, k));
       m.lastSafeX = x;
       this.fighters.push(m);
     }
@@ -479,6 +518,93 @@ class FightScene extends Phaser.Scene {
     if (!this.spawnZones) return;
     for (const z of this.spawnZones) {
       if (!z.done && z.trigger != null && this.p1.sprite.x >= z.trigger) this.fireZone(z);
+    }
+  }
+
+  // ---- Bullets (gunner mooks) — REAL projectiles, never hitscan (user:
+  // wants to swipe them away with a katana someday). Each bullet is a point
+  // mass integrated on the fixed sim step; any attack hitbox that overlaps it
+  // (swatBullets, called from resolveHits' pass) deflects it. Bullets hit
+  // fighters through takeHit; a bullet that hits its OWN shooter's side bounces
+  // (no self-damage comedy loops). ----
+  spawnBullet(o) {
+    if (!this.bullets) this.bullets = [];
+    this.bullets.push({
+      x: o.x, y: o.y, vx: o.vx,
+      damage: o.damage, knock: o.knock, owner: o.owner,
+      life: 110,          // frames (~1.8s) — despawn so off-screen shots die
+      swatted: 0,         // deflection counter (render + eventual katana flair)
+    });
+  }
+
+  stepBullets() {
+    const bs = this.bullets;
+    if (!bs || !bs.length) return;
+    for (const bl of bs) {
+      if (bl.dead) continue;
+      bl.x += bl.vx * SIM_STEP;
+      bl.life--;
+      if (bl.life <= 0) { bl.dead = true; continue; }
+      // Walls: bullets die on the world edges (pillars block them too).
+      if (bl.x < 4 || bl.x > this.levelWidth - 4) { bl.dead = true; continue; }
+      const lv = this.level;
+      if (lv) for (const p of lv.pillars) {
+        if (bl.x >= p.x && bl.x <= p.x + p.w && bl.y >= p.top && bl.y <= this.groundY) {
+          bl.dead = true;   // sparks: keep for a beat as a impact stub
+          break;
+        }
+      }
+      if (bl.dead) continue;
+      // Hits: nearest live fighter whose body box the bullet sits inside.
+      for (const f of this.fighters) {
+        if (f.dead || f.gone || f.invuln > 0) continue;
+        if (f === bl.owner && bl.life > 100) continue;  // don't eat the muzzle frame
+        const dx = bl.x - f.sprite.x, dy = bl.y - f.sprite.y;
+        if (Math.abs(dx) < CFG.body.width / 2 + 3 && Math.abs(dy) < CFG.body.height / 2 + 3) {
+          bl.dead = true;
+          f.takeHit({ damage: bl.damage, knock: bl.knock }, Math.sign(bl.vx) || 1);
+          this.onHitFeedback({ damage: bl.damage });
+          break;
+        }
+      }
+    }
+    this.bullets = bs.filter((b) => !b.dead);
+  }
+
+  // Katana-swipe HOOK: called with the scene's current attack hitboxes each
+  // sim step (resolveHits). Any hitbox overlapping a bullet deflects it —
+  // today that's "you can bat a bullet away with a punch", tomorrow it's the
+  // katana's swipe box. Deflected bullets keep flying (reversed, slowed) with
+  // owner cleared so they can hit the shooter back; a second swat kills them.
+  swatBullets(hitboxes) {
+    if (!this.bullets || !this.bullets.length) return;
+    for (const bl of this.bullets) {
+      if (bl.dead) continue;
+      for (const hb of hitboxes) {
+        if (bl.x >= hb.x && bl.x <= hb.x + hb.w && bl.y >= hb.y && bl.y <= hb.y + hb.h) {
+          bl.swatted++;
+          bl.vx = -bl.vx * 0.65;                 // batted back, slower
+          bl.y -= 6 + Math.random() * 10;        // flipped up off the line
+          bl.owner = null;                       // defanged from its shooter
+          bl.life = Math.min(bl.life, 45);
+          if (bl.swatted >= 2) bl.dead = true;   // swat twice = swatted away
+          break;
+        }
+      }
+    }
+  }
+
+  renderBullets() {
+    if (!this.bulletGfx && !(this.bullets && this.bullets.length)) return;  // never drawn yet
+    if (!this.bulletGfx) { this.bulletGfx = this.add.graphics(); this.bulletGfx.setDepth(5); }
+    const g = this.bulletGfx;
+    g.clear();   // ALWAYS clear: skipping the clear when the last bullet died
+                 // burned frozen tracers onto the world forever.
+    if (!this.bullets) return;
+    for (const bl of this.bullets) {
+      const c = bl.swatted ? 0x9ad0ff : 0xffe08a;   // swatted ones read blue
+      g.fillStyle(c, 1);
+      g.fillRoundedRect(bl.x - 5, bl.y - 2, 10, 4, 2);   // tracer, not a circle
     }
   }
 
@@ -497,6 +623,14 @@ class FightScene extends Phaser.Scene {
     if (this.eng) this.eng.tick();   // handoff cooldown pace
     this.checkTriggers();            // progress-gated spawn zones (levels)
     this.resolveHits();
+    // Bullet pass (gunner mooks): any live attack hitbox may SWAT bullets
+    // (the katana hook — a punch can bat one away today), then integrate.
+    {
+      const boxes = [];
+      for (const f of this.fighters) if (!f.dead) for (const hb of f.hitboxes) boxes.push(hb);
+      if (boxes.length) this.swatBullets(boxes);
+    }
+    this.stepBullets();
     this.separateBodies();
     this.resolveGround();            // floors/platforms/pits (levels; arena = groundY)
     // Reap despawned corpses. Cost note: settled ragdolls integrate NOTHING
@@ -672,6 +806,7 @@ class FightScene extends Phaser.Scene {
 
   renderAll() {
     for (const f of this.fighters) { if (!f.dead) f.render(); else if (f.ragdoll) f.renderRagdoll(); }
+    this.renderBullets();
     this.updateCamera();
 
     // HUD health bars.
