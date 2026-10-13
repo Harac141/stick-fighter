@@ -39,6 +39,10 @@
     .card .desc { font-size: 12px; color: #8fa0c8; line-height: 1.5; min-height: 36px; }
     .card .meta { margin-top: 10px; font-size: 11px; color: #5b6a94; letter-spacing: 1px; }
     .card .meta .tag { color: #ffe066; }
+    .card .cbtns { margin-top: 8px; display: flex; gap: 10px; }
+    .card .cbtn { font-size: 11px; color: #5b6a94; cursor: pointer; padding: 2px 6px;
+      border: 1px solid #24304f; border-radius: 4px; }
+    .card .cbtn:hover { color: #ffe066; border-color: #6f86c8; }
     #hint { margin-top: 34px; color: #5b6a94; font-size: 12px; letter-spacing: 1px; text-align: center; line-height: 1.9; }
     #hint b { color: #8fa0c8; }
   </style>
@@ -50,7 +54,8 @@
     <div id="cards"></div>
     <div id="hint">
       <b>A / D</b> move &nbsp;·&nbsp; <b>SPACE</b> jump &nbsp;·&nbsp; <b>SHIFT</b> dash &nbsp;·&nbsp; <b>J</b> jab ×3 = combo &nbsp;·&nbsp; <b>K</b> heavy &nbsp;·&nbsp; <b>W / S</b> + attack = up / down moves<br>
-      press <b>1–5</b> to pick &nbsp;·&nbsp; bullets can be batted away with any hit — bat twice and they're gone
+      press <b>1–5</b> to pick &nbsp;·&nbsp; bullets can be batted away with any hit — bat twice and they're gone<br>
+      <a href="editor.html" style="color:#8fa0c8">⚒ MAP EDITOR</a> — build your own arena, it appears on this shelf
     </div>
   </div>
   <div id="game"></div>
@@ -63,6 +68,9 @@
   </script>
   <!-- Level data is pure JS: safe to load on the menu screen too (cards build from it). -->
   <script src="js/levels.js?v=ceb7d07"></script>
+  <!-- Editor exports (LAN share via nocache_server PUT). Optional: 404 is fine,
+       localStorage customs below carry the load on GitHub Pages. -->
+  <script src="js/custom.js?v=ceb7d07" onerror=""></script>
   <script>
     (function () {
       // Any query string boots the game straight away (keeps every shared/test
@@ -92,9 +100,13 @@
         return;
       }
 
-      // ---- menu mode: build cards from window.LEVELS ----
+      // ---- menu mode: build cards from window.LEVELS (+ editor customs) ----
+      const CUSTOM = window.CUSTOM_LEVELS || {};
       const hex = (n) => '#' + ('000000' + (n >>> 0).toString(16)).slice(-6);
-      const entries = [
+      // Editor-saved levels join the shelf (localStorage; shared by origin).
+      const customKeys = Object.keys(CUSTOM).filter((k) => !window.LEVELS || !window.LEVELS[k]);
+      let cardsBuilt = 0;
+      const entries = customKeys.map((k) => ({ key: k, href: '?level=' + k, custom: true })).concat([
         { key: 'dojo', href: '?level=dojo' },
         { key: 'rooftop', href: '?level=rooftop' },
         { key: 'warehouse', href: '?level=warehouse' },
@@ -106,10 +118,11 @@
           desc: 'Six mooks, one player. How good is your crowd control?',
           tags: ['SURVIVAL'], sky: [0x101423, 0x1b2440], width: 1280,
           pillars: [], mooks: 6 },
-      ];
+      ]);
       const cards = document.getElementById('cards');
+      let shown = 0;
       entries.forEach((e, i) => {
-        const lv = e.key ? window.LEVELS[e.key] : e;
+        const lv = e.key ? ((window.LEVELS || {})[e.key] || CUSTOM[e.key]) : e;
         if (!lv) return;
         const btn = document.createElement('button');
         btn.className = 'card';
@@ -130,16 +143,30 @@
         const tags = [];
         if (hasSniper) tags.push('<span class="tag">SNIPER</span>');
         if (hasElite) tags.push('<span class="tag">ELITES</span>');
+        if (e.custom) tags.push('<span class="tag">CUSTOM</span>');
         (e.tags || []).forEach((t) => tags.push('<span class="tag">' + t + '</span>'));
         btn.innerHTML =
           '<div class="sky" style="background:linear-gradient(' + hex(lv.sky[0]) + ',' + hex(lv.sky[1]) + ')">'
           + pil + '<div class="floor"></div></div>'
           + '<div class="body">'
-          + '<div class="name">' + (i + 1) + '. ' + (e.name || e.key.toUpperCase()) + '</div>'
+          + '<div class="name">' + (++shown) + '. ' + (e.name || e.key.toUpperCase()) + '</div>'
           + '<div class="desc">' + (lv.desc || e.desc || '') + '</div>'
           + '<div class="meta">' + (lv.width || 1280) + 'px · ' + mooks + ' MOOKS'
           + (tags.length ? ' · ' + tags.join(' ') : '') + '</div>'
+          + (e.custom ? '<div class="cbtns">'
+              + '<span class="cbtn" data-act="edit">✎ edit</span>'
+              + '<span class="cbtn" data-act="del">✕ delete</span></div>' : '')
           + '</div>';
+        if (e.custom) btn.querySelectorAll('.cbtn').forEach((b) => {
+          b.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (b.dataset.act === 'edit') { location.href = 'editor.html?edit=' + encodeURIComponent(e.key); return; }
+            const all = JSON.parse(localStorage.getItem('stickfight.customLevels') || '{}');
+            delete all[e.key];
+            localStorage.setItem('stickfight.customLevels', JSON.stringify(all));
+            btn.remove();
+          });
+        });
         cards.appendChild(btn);
       });
       document.getElementById('menu').style.display = 'flex';

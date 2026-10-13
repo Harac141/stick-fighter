@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Stick Fight — Map Editor</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #08080c; color: #cdd6f4;
+      font-family: monospace; height: 100%; overflow: hidden; }
+    #bar { display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+      border-bottom: 1px solid #24304f; background: #0b0e18; flex-wrap: wrap; }
+    #bar .grp { display: flex; gap: 4px; align-items: center;
+      padding-right: 10px; border-right: 1px solid #1c2440; margin-right: 4px; }
+    button { font-family: inherit; font-size: 12px; background: #141a2e; color: #cdd6f4;
+      border: 1px solid #2a3760; border-radius: 5px; padding: 5px 9px; cursor: pointer; }
+    button:hover { border-color: #6f86c8; }
+    button.on { background: #2a3760; border-color: #6f86c8; color: #fff; }
+    button.accent { border-color: #6f86c8; color: #ffe066; }
+    select, input[type=text], input[type=number] { font-family: inherit; font-size: 12px;
+      background: #0e1220; color: #cdd6f4; border: 1px solid #2a3760; border-radius: 4px;
+      padding: 4px 6px; }
+    input[type=number] { width: 64px; }
+    #main { display: flex; height: calc(100% - 44px); }
+    #cvwrap { flex: 1; min-width: 0; position: relative; }
+    canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+    #panel { width: 240px; border-left: 1px solid #24304f; background: #0b0e18;
+      padding: 12px; box-sizing: border-box; overflow-y: auto; font-size: 12px; }
+    #panel h3 { margin: 14px 0 6px; font-size: 11px; letter-spacing: 2px; color: #5b6a94; }
+    #panel label { display: block; margin: 6px 0 2px; color: #8fa0c8; }
+    #panel .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+    #status { color: #8fe08f; font-size: 12px; min-height: 14px; margin-top: 10px; }
+    #help { color: #5b6a94; font-size: 11px; line-height: 1.8; margin-top: 14px;
+      border-top: 1px solid #1c2440; padding-top: 10px; }
+    #modal { position: fixed; inset: 0; background: rgba(4,6,10,.8); display: none;
+      align-items: center; justify-content: center; }
+    #modal .box { background: #0e1220; border: 1px solid #2a3760; border-radius: 8px;
+      padding: 16px; width: 640px; }
+    #modal textarea { width: 100%; height: 300px; box-sizing: border-box;
+      background: #08080c; color: #cdd6f4; font-family: inherit; font-size: 11px;
+      border: 1px solid #2a3760; border-radius: 4px; padding: 8px; }
+    #modal .row { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <div class="grp">
+      <button data-tool="select" class="on" title="Select / move (drag empty = pan)">SELECT</button>
+      <button data-tool="pillar" title="Drag to raise a column">PILLAR</button>
+      <button data-tool="mook" title="Click ground or a pillar to drop a mook zone">MOOK</button>
+      <button data-tool="elite" title="Elite zone (hp 24)">ELITE</button>
+      <button data-tool="gunner" title="Pistol gunner — put him on a pillar">GUNNER</button>
+      <button data-tool="erase" title="Click an object to remove it">ERASE</button>
+    </div>
+    <div class="grp">
+      <select id="template" title="Load a starting layout"></select>
+      <button id="newBtn">NEW</button>
+    </div>
+    <div class="grp">
+      <input type="text" id="f-name" value="myarena" size="10" title="level id (a-z 0-9 _ -)">
+      <input type="text" id="f-desc" value="" size="24" placeholder="description">
+      <label style="margin:0">W<input type="number" id="f-width" value="2600" step="100" min="1280" max="8192"></label>
+      <select id="f-sky" title="sky palette"></select>
+    </div>
+    <div class="grp">
+      <button id="wavesBtn" title="Auto-gang spawn triggers so mooks come in waves">WAVES</button>
+      <button id="saveBtn" class="accent">SAVE</button>
+      <button id="playBtn">PLAY TEST</button>
+      <button id="ioBtn">IMPORT / EXPORT</button>
+      <button id="backBtn">MENU</button>
+    </div>
+  </div>
+  <div id="main">
+    <div id="cvwrap"><canvas id="cv" width="1280" height="560"></canvas></div>
+    <div id="panel">
+      <h3>SELECTED</h3>
+      <div id="props"><span style="color:#5b6a94">nothing selected</span></div>
+      <div id="status"></div>
+      <div id="help">
+        wheel = zoom · right-drag = pan · drag empty with SELECT = pan<br>
+        PILLAR: drag up-and-across from the floor line<br>
+        click on a pillar with a spawn tool = pinned on top<br>
+        Del = delete · Ctrl+Z = undo · Ctrl+S = save<br>
+        saved levels appear in the menu (✕ deletes them)
+      </div>
+    </div>
+  </div>
+  <div id="modal"><div class="box">
+    <div style="font-size:12px;color:#8fa0c8;margin-bottom:8px">Level JSON — copy this out, or paste and Import.</div>
+    <textarea id="ioText" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="copyBtn">COPY</button>
+      <button id="importBtn" class="accent">IMPORT</button>
+      <button id="closeBtn">CLOSE</button>
+    </div>
+  </div></div>
+  <!-- Shipped levels as templates; pure data, no game code here. -->
+  <script src="js/levels.js?v=ceb7d07"></script>
+  <script src="js/editor.js?v=ceb7d07"></script>
+</body>
+</html>

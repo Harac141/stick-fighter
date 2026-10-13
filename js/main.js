@@ -23,8 +23,9 @@ class FightScene extends Phaser.Scene {
   // before on the arcade world (this.level stays null).
   loadLevel() {
     const q = new URLSearchParams(location.search);
-    const name = (q.get('level') || (window.LEVELS ? '' : '') || '').toLowerCase();
-    const lv = name && window.LEVELS && window.LEVELS[name];
+    const name = (q.get('level') || (window.LEVELS || window.CUSTOM_LEVELS ? '' : '') || '').toLowerCase();
+    const lv = name && ((window.LEVELS && window.LEVELS[name])
+              || (window.CUSTOM_LEVELS && window.CUSTOM_LEVELS[name]));
     if (!lv) return null;
     const W = 1280;
     const wParam = q.get('width');
