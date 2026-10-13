@@ -71,16 +71,46 @@ const CFG = {
   },
   // Attacks: startup, active, recovery in frames; knockback vx/vy.
   attacks: {
-    jab: {
-      startup: 2, active: 3, recovery: 5,   // 10-frame jab (was 16)
-      damage: 6,
+    // ---- Jab = a 3-hit CHAIN, not a button (user: jab was spammable). ----
+    // Tapping J throws single light jabs: chip damage, LONG lone cooldown
+    // (that's the "have to commit" tax). Pressing again inside the chain
+    // window links jab1 -> jab2 -> finisher; the finisher is the commitment
+    // payoff (real knockback, big stun, long whiff recovery). Chain state
+    // lives on the Fighter (chainStep/chainT), advanced in startAttack.
+    jab: {                                      // AI free-poke (MookAI pulses
+      startup: 2, active: 3, recovery: 5,       // inp.jab) — kept at the old
+      damage: 6, pose: 'jab',                   // numbers: mob balance is
       box:   { x: 34, y: -14, w: 46, h: 22 }, // relative to fighter center, facing right
-      knock: { x: 260, y: -140, hitstun: 14 },
-      cooldown: 6,
+      knock: { x: 260, y: -140, hitstun: 14 },  // untouched by the player-chain
+      cooldown: 6,                              // rework (user asked player-only)
+    },
+    jab1: {
+      chain: true,
+      startup: 2, active: 3, recovery: 5,      // snappy — chain feel matters
+      damage: 3, pose: 'jab', lunge: 300,
+      box:   { x: 34, y: -14, w: 46, h: 22 },
+      knock: { x: 40, y: -20, hitstun: 9 },    // chip: freeze in place, keep the target in box range
+      cooldown: 22,                             // dropped if the chain continues
+    },
+    jab2: {
+      chain: true,
+      startup: 3, active: 3, recovery: 6,
+      damage: 3, pose: 'jab', lunge: 300,
+      box:   { x: 32, y: -12, w: 48, h: 24 },  // other hand, slightly wider
+      knock: { x: 45, y: -25, hitstun: 10 },   // still a chip; target stays put
+      cooldown: 22,
+    },
+    finisher: {                                 // chain step 3: the payoff
+      chain: true,
+      startup: 6, active: 4, recovery: 14,      // wind-up reads as commitment
+      damage: 11, pose: 'finisher',
+      box:   { x: 30, y: -6, w: 56, h: 32 },
+      knock: { x: 520, y: -300, hitstun: 24 },  // real pop — combos end here
+      cooldown: 38,                             // the string's cooldown
     },
     heavy: {
       startup: 9, active: 5, recovery: 20,
-      damage: 14,
+      damage: 14, lunge: 600,
       box:   { x: 30, y: 4, w: 58, h: 26 },
       knock: { x: 520, y: -360, hitstun: 26 },
       cooldown: 14,
@@ -225,6 +255,16 @@ class Fighter {
     this.currentAttack = null; // name
     this.attackFrame = 0;      // counts up from 0 across startup+active+recovery
     this.hitConfirmed = false; // one hit per attack
+    // Jab chain (3-hit combo): chainStep = last chain link fired (0..3),
+    // chainT = frames since that link STARTED (must be within the window to
+    // advance). A lone tap leaves chainStep reset so the next tap restarts.
+    this.chainStep = 0;
+    this.chainT = 999;
+    this.chainQueued = false;  // early-press held for the next cancel opportunity
+    this.chainWindow = 32;     // frames after a link's start to press again & keep the chain
+                               // (just past the 22f link cooldown: a relaxed
+                               // human still links, but a deliberate pause resets)
+    this._jabHeld = false;     // rising-edge detector: the 3-step input buffer must read as ONE press
 
     // Hitboxes (spawned fresh per attack active window).
     this.hitboxes = [];        // {x,y,w,h,...} world-space rect (left,top,w,h)
@@ -262,7 +302,26 @@ class Fighter {
   update(input) {
     // Tick frame timers.
     if (this.dashCooldown > 0) this.dashCooldown--;
-    if (this.attackCooldown > 0) this.attackCooldown--;
+    if (this.attackCooldown > 0) {
+      this.attackCooldown--;
+      // Buffered chain continuation: pressed during the tax window — fire the
+      // next link the instant the cooldown lifts (once you've committed to
+      // the string, the tax only gates the NEXT string, not this one).
+      if (this.attackCooldown === 0 && this.chainQueued && !this.currentAttack
+          && !this.ai && !this.airborne && this.chainStep >= 1 && this.chainStep <= 2
+          && this.chainT <= this.chainWindow) {
+        this.startAttack(this.chainStep === 1 ? 'jab2' : 'finisher');
+        return;
+      }
+    } else if (this.chainQueued) {
+      this.chainQueued = false;   // stale (window expired / attack started elsewhere)
+    }
+    // Rising-edge the jab: the scene's 3-step input buffer makes ONE tap
+    // read as jab=true for 3 consecutive sim steps, which would auto-advance
+    // the chain by itself. A chain press = key newly down.
+    const jabPressed = !!input.jab && !this._jabHeld;
+    this._jabHeld = !!input.jab;
+    if (this.chainT < 900) this.chainT++;   // frames since last chain link started
     if (this.invuln > 0) this.invuln--;
     if (this.muzzleT > 0) this.muzzleT--;
 
@@ -327,6 +386,21 @@ class Fighter {
 
     // Attack state dominates movement.
     if (this.state === 'attack') {
+      // CHAIN CANCEL: the recovery of a chain link cancels into the NEXT
+      // link when jab is pressed again (buffered early presses too). This
+      // is what links the 3-hit string instead of three separate taps.
+      // Players only: AI pulses inp.jab for its free pokes and must never
+      // fall into the chain (mob balance stays on the old 'jab' numbers).
+      const cur = this.currentAttack && CFG.attacks[this.currentAttack];
+      if (cur && cur.chain && !this.ai && !this.airborne && (jabPressed || this.chainQueued)
+          && this.chainStep >= 1 && this.chainStep <= 2) {
+        if (this.attackFrame <= cur.startup + cur.active) {
+          if (jabPressed) this.chainQueued = true;   // pressed too early: hold it
+        } else if (this.chainT <= this.chainWindow) {
+          this.startAttack(this.chainStep === 1 ? 'jab2' : 'finisher');
+          return;
+        }
+      }
       this.tickAttack();
       // No lockX: existing momentum carries through the attack.
       return;
@@ -341,6 +415,12 @@ class Fighter {
         || this.state === 'jump' || this.state === 'fall' || this.state === 'dash')) {
       const mv = this.selectAttack(input);
       if (mv && this.canStartAttack()) { this.startAttack(mv); return; }
+    }
+    // Chain press landing on the tax window (idle, cooldown ticking): buffer
+    // it so the string resumes the frame the cooldown lifts.
+    if (jabPressed && !this.currentAttack && !this.ai && this.attackCooldown > 0
+        && this.chainStep >= 1 && this.chainStep <= 2 && this.chainT <= this.chainWindow) {
+      this.chainQueued = true;
     }
 
     // ---- Dash (ground only) ----
@@ -458,11 +538,27 @@ class Fighter {
     }
     if (input.up) return H ? 'cartwheel' : 'uppercut';   // up+attack = launcher, no jump needed
     if (input.down) return H ? 'hammerfist' : 'sweep';   // (also works from run)
-    return H ? 'heavy' : 'jab';
+    if (H) return 'heavy';
+    if (this.ai) return 'jab';              // mob free-poke: old numbers, no chain
+    // Player grounded plain jab: continue the 3-hit chain if one is live and
+    // in window, else open a fresh chain (jab1 = chip + lone-cooldown tax).
+    if (this.chainStep >= 1 && this.chainStep <= 2 && this.chainT <= this.chainWindow)
+      return this.chainStep === 1 ? 'jab2' : 'finisher';
+    return 'jab1';
   }
 
   startAttack(name) {
     const atk = CFG.attacks[name];
+    // Chain bookkeeping: links advance chainStep (1/2/3) and refresh the
+    // window clock; ANY non-chain attack (heavy, launcher, shot...) resets
+    // the chain — committing elsewhere forfeits the string.
+    if (atk.chain) {
+      this.chainStep = (name === 'jab1') ? 1 : (name === 'jab2') ? 2 : 3;
+      this.chainT = 0;
+    } else {
+      this.chainStep = 0;
+    }
+    this.chainQueued = false;
     this.currentAttack = name;
     this.attackFrame = 0;
     this.hitConfirmed = false;
@@ -565,12 +661,14 @@ class Fighter {
       this.hitboxes.length = 0;
       this.state = this.airborne ? 'fall' : 'idle';
     }
-    // Slight forward step on the ground during startup+active of heavy.
-    if (this.currentAttack === 'heavy' && !this.airborne
+    // Slight forward step on the ground during startup+active of lunging
+    // attacks (heavy; chain links step IN so the string stays connected —
+    // light knockback alone lets the target slide out of box range by link 2).
+    if (atk.lunge && !this.airborne
         && this.attackFrame > atk.startup - 3 && this.attackFrame <= activeEnd) {
       // Lunge drive is ADDED to (capped by) existing momentum, never overwrites it.
       this.body.setVelocityX(this.approach(this.body.velocity.x,
-        this.facing * Math.max(Math.abs(this.body.velocity.x), 170), 600 * STEP));
+        this.facing * Math.max(Math.abs(this.body.velocity.x), 170), atk.lunge * STEP));
     }
   }
 
@@ -879,6 +977,7 @@ class Fighter {
     if (this.onGround) this.body.setVelocityY(hb.knock.y);
     this.currentAttack = null;
     this.hitboxes.length = 0;
+    this.chainStep = 0;       // getting hit forfeits the jab string
     this.state = 'hurt';
     // Meteor spike: slam down, then a bounce + scramble delay on landing.
     if (hb.meteor) this.meteorPending = true;
@@ -1131,7 +1230,18 @@ class Fighter {
         } else if (atk.pose === 'shoot') {      // gunner: feet planted, slight recoil lean
           lean = act ? 0.10 : -0.03;
           footF = P(f * 20, feetY); footB = P(-f * 22, feetY);
-        } else if (fr <= atk.startup)      { lean = -0.06; hipY = feetY - 38;
+        } else if (atk.pose === 'finisher') {      // committed overhand cross: wind back, plant, throw
+        if (fr <= atk.startup) {
+          lean = -0.10;                            // coil onto the back foot
+          footF = P(f * 10, feetY); footB = P(-f * 22, feetY);
+        } else if (act) {
+          lean = 0.24;                             // commit through the hip
+          footF = P(f * 24, feetY); footB = P(-f * 18, feetY - 4);
+        } else {
+          lean = 0.16;
+          footF = P(f * 20, feetY); footB = P(-f * 16, feetY);
+        }
+      } else if (fr <= atk.startup)      { lean = -0.06; hipY = feetY - 38;
           footF = P(f * 14, feetY); footB = P(-f * 18, feetY); }
         else if (act) { lean = 0.12; hipX = x + f * 2;
           footF = P(f * 18, feetY); footB = P(-f * 20, feetY - 8); }
@@ -1257,6 +1367,17 @@ class Fighter {
       } else if (atk.pose === 'airjab') {         // short sharp forward poke
         if (act) { handF = P(f * 30, feetY - 64); handB = P(-f * 10, feetY - 66); }
         else { handF = P(f * 10, feetY - 62); handB = P(-f * 12, feetY - 64); }
+      } else if (atk.pose === 'finisher') {       // overhand: rear hand arcs OVER from behind the head
+        if (fr <= atk.startup) {
+          handF = P(-f * 16, feetY - 78); handB = P(f * 4, feetY - 60);   // coil high-back, lead hand guards
+        } else if (act) {
+          const ka = (fr - atk.startup) / Math.max(1, atk.active);
+          uArmF += 8; fArmF += 8;
+          handF = P((atk.box.x + atk.box.w - 14) * f * (0.55 + 0.45 * ka), chestY - 6);
+          handB = P(-f * 8, feetY - 62);
+        } else {
+          handF = P(f * 14, feetY - 58); handB = P(-f * 6, feetY - 62);   // settle off the throw
+        }
       } else if (atk.pose === 'shoot') {          // two-handed aim, gun at eye line
         const aim = fr <= atk.startup ? Math.min(1, fr / Math.max(1, atk.startup)) : (act ? 1 : 0.75);
         handF = P(f * (10 + 26 * aim), feetY - 62);
