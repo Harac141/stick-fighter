@@ -101,7 +101,11 @@
       }
 
       // ---- menu mode: build cards from window.LEVELS (+ editor customs) ----
-      const CUSTOM = window.CUSTOM_LEVELS || {};
+      // Customs live in localStorage per origin (the editor's SAVE target);
+      // window.CUSTOM_LEVELS is the optional LAN-share file (dev server PUT).
+      const CUSTOM = Object.assign({}, window.CUSTOM_LEVELS || {});
+      try { Object.assign(CUSTOM, JSON.parse(localStorage.getItem('stickfight.customLevels') || '{}')); }
+      catch (e) { /* private mode: registry/file only */ }
       const hex = (n) => '#' + ('000000' + (n >>> 0).toString(16)).slice(-6);
       // Editor-saved levels join the shelf (localStorage; shared by origin).
       const customKeys = Object.keys(CUSTOM).filter((k) => !window.LEVELS || !window.LEVELS[k]);

@@ -361,7 +361,12 @@
     const all = loadLS();
     all[name] = JSON.parse(JSON.stringify(doc));
     saveLS(all);
-    location.href = 'index.html?level=' + encodeURIComponent(name);
+    // Hand the map through the URL too, not just localStorage: the playtest
+    // must boot THIS map even when index.html runs on a different origin
+    // (tunnel vs LAN vs Pages all have separate localStorage) or has a stale
+    // cache. base64(JSON) survives URLs; index.html decodes ?map=.
+    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(doc))));
+    location.href = 'index.html?level=' + encodeURIComponent(name) + '&map=' + encodeURIComponent(b64);
   });
   document.getElementById('backBtn').addEventListener('click', () => { location.href = 'index.html'; });
   document.getElementById('newBtn').addEventListener('click', () => {

@@ -24,8 +24,25 @@ class FightScene extends Phaser.Scene {
   loadLevel() {
     const q = new URLSearchParams(location.search);
     const name = (q.get('level') || (window.LEVELS || window.CUSTOM_LEVELS ? '' : '') || '').toLowerCase();
-    const lv = name && ((window.LEVELS && window.LEVELS[name])
-              || (window.CUSTOM_LEVELS && window.CUSTOM_LEVELS[name]));
+    // Editor PLAY TEST hands the map through the URL (?map=base64 JSON) so the
+    // boot can't depend on localStorage — origins differ (LAN / tunnel / Pages)
+    // and Pages may serve stale cached scripts. URL map beats everything.
+    const mapParam = q.get('map');
+    let lv = null;
+    if (mapParam) {
+      try { lv = JSON.parse(decodeURIComponent(escape(atob(mapParam)))); }
+      catch (e) { lv = null; }   // corrupt param: fall through to the registry
+    }
+    if (!lv && name) {
+      lv = (window.LEVELS && window.LEVELS[name])
+        || (window.CUSTOM_LEVELS && window.CUSTOM_LEVELS[name]);
+      if (!lv) {   // editor saves live in localStorage per origin too
+        try {
+          const all = JSON.parse(localStorage.getItem('stickfight.customLevels') || '{}');
+          lv = all[name] || null;
+        } catch (e) { /* private-mode throw: registry only */ }
+      }
+    }
     if (!lv) return null;
     const W = 1280;
     const wParam = q.get('width');
