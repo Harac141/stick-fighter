@@ -173,7 +173,11 @@ const CFG = {
     // spawns a travelling projectile (scene.spawnBullet) so bullets are
     // physical things a katana (future) — or any hitbox today — can swat.
     shoot: {
-      startup: 16, active: 3, recovery: 24,     // long aim = readable telegraph
+      startup: 20, active: 3, recovery: 24,     // long aim = readable telegraph
+      aimLock: 10,                              // frame the aim COMMITS: after
+                                                // this, moving dodges (the shot
+                                                // no longer tracks); sight line
+                                                // shows the committed vector
       damage: 8, pose: 'shoot',
       box:   { x: 40, y: -14, w: 2, h: 2 },     // muzzle marker only (bullet does the damage)
       fire:  { speed: 1150, y: -14 },            // px/s (user: gunner bullets FAST); no gravity — straight line reads as a bullet
@@ -617,35 +621,43 @@ class Fighter {
     // Multi-hit (hitFrames = [f1, f2]): each frame opens a fresh 2-frame
     // window with its own hit-landed flag — the cartwheel's tick-then-pop.
     this.hitboxes.length = 0;
-    // Gun: the FIRST active frame spawns the bullet (the muzzle-flash frame).
-    // Bullets are real travelling objects (scene.spawnBullet) — NOT hitscan —
-    // so a hitbox (future katana swipe, any attack today) can swat them.
-    if (atk.fire && this.attackFrame === atk.startup + 1 && !this.firedShot) {
-      this.firedShot = true;
-      this.muzzleT = 4;   // flash frames (render-side)
-      // Aim: gunners acquire a vertical line so a sniper on a pillar actually
-      // shoots DOWN at a runner on the floor (flat shots would sail over).
-      // Speed comes from the target distance so steep shots don't flatten out.
-      let vy = 0, vx2;
-      const t = this.ai && this.ai.gunner ? (this.ai.target || null) : null;
-      if (t && !t.dead) {
-        const dx = t.x - this.x, dy = (t.y - 8) - (this.y + atk.fire.y);
-        if (dx * this.facing > 0) {                      // only aim where we face
-          const dist = Math.hypot(dx, dy);
-          const sp = atk.fire.speed;
-          vx2 = (dx / dist) * sp;
-          vy = (dy / dist) * sp;
+    // Gun: the aim COMMITS at atk.aimLock (a few frames before the fire
+    // frame) and never tracks again — moving off the line genuinely dodges.
+    // The committed vector lives on the fighter so renderSights can draw the
+    // laser sight, and the fire frame just spends it.
+    if (atk.fire) {
+      if (this.attackFrame === (atk.aimLock || atk.startup) && !this.aimVec) {
+        let vx2 = this.facing * atk.fire.speed, vy = 0;
+        const t = this.ai && this.ai.gunner ? (this.ai.target || null) : null;
+        if (t && !t.dead) {
+          const dx = t.x - this.x, dy = (t.y - 8) - (this.y + atk.fire.y);
+          if (dx * this.facing > 0) {                     // only aim where we face
+            const dist = Math.hypot(dx, dy);
+            const sp = atk.fire.speed;
+            vx2 = (dx / dist) * sp;
+            vy = (dy / dist) * sp;
+          }
         }
+        this.aimVec = { vx: vx2, vy };
       }
-      this.scene.spawnBullet({
-        x: this.x + this.facing * 46, y: this.y + atk.fire.y,
-        vx: (vx2 !== undefined ? vx2 : this.facing * atk.fire.speed), vy,
-        damage: atk.damage,
-        knock: { x: atk.knock.x, y: atk.knock.y, hitstun: atk.knock.hitstun },
-        owner: this,
-      });
+      // Fire on the first active frame (muzzle-flash frame) with the LOCKED
+      // vector. A shot that never locked (edge cases) re-aims now.
+      if (this.attackFrame === atk.startup + 1 && !this.firedShot) {
+        this.firedShot = true;
+        this.muzzleT = 4;   // flash frames (render-side)
+        const a = this.aimVec || { vx: this.facing * atk.fire.speed, vy: 0 };
+        this.aimVec = null;   // spent
+        this.scene.spawnBullet({
+          x: this.x + this.facing * 46, y: this.y + atk.fire.y,
+          vx: a.vx, vy: a.vy,
+          damage: atk.damage,
+          knock: { x: atk.knock.x, y: atk.knock.y, hitstun: atk.knock.hitstun },
+          owner: this,
+        });
+      }
     }
     if (this.currentAttack !== 'shoot') this.firedShot = false;
+    if (this.currentAttack !== 'shoot') this.aimVec = null;   // never leaked across attacks
     if (atk.hitFrames) {
       for (const hf of atk.hitFrames) {
         if (this.attackFrame === hf) this.hitConfirmed = false;  // new window
@@ -978,6 +990,7 @@ class Fighter {
     this.currentAttack = null;
     this.hitboxes.length = 0;
     this.chainStep = 0;       // getting hit forfeits the jab string
+    this.aimVec = null;       // a shot interrupted after its aim lock dies with it
     this.state = 'hurt';
     // Meteor spike: slam down, then a bounce + scramble delay on landing.
     if (hb.meteor) this.meteorPending = true;

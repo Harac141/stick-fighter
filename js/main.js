@@ -613,6 +613,56 @@ class FightScene extends Phaser.Scene {
     }
   }
 
+  // Laser sight for gunner shots AFTER their aim has committed (aimVec set
+  // at atk.aimLock): the line is the promise — it shows exactly where the
+  // locked bullet will fly, so stepping off it (or behind a pillar) dodges.
+  renderSights() {
+    const shooters = this.fighters.filter((f) =>
+      f.ai && f.weapon && !f.dead && f.currentAttack === 'shoot'
+      && f.aimVec && !f.firedShot);
+    if (!shooters.length) {
+      if (this.sightGfx) this.sightGfx.clear();
+      return;
+    }
+    if (!this.sightGfx) { this.sightGfx = this.add.graphics(); this.sightGfx.setDepth(5); }
+    const g = this.sightGfx;
+    g.clear();
+    const lv = this.level;
+    for (const s of shooters) {
+      const atk = Fighter.CFG.attacks.shoot;
+      const mx = s.x + s.facing * 46, my = s.y + atk.fire.y;
+      const sp = Math.hypot(s.aimVec.vx, s.aimVec.vy) || 1;
+      const dx = s.aimVec.vx / sp, dy = s.aimVec.vy / sp;
+      // Raycast the sight: clip at the first pillar box, the floor, or a
+      // world edge — same death rules stepBullets uses, so the line's end is
+      // truthful about where the bullet would die.
+      let tMax = 1400;
+      const clipSlab = (x0, x1, y0, y1) => {   // ray vs AABB entry distance
+        const tx0 = (dx > 0 ? (x0 - mx) / dx : (dx < 0 ? (x1 - mx) / dx : Infinity));
+        const tx1 = (dx > 0 ? (x1 - mx) / dx : (dx < 0 ? (x0 - mx) / dx : Infinity));
+        const ty0 = (dy > 0 ? (y0 - my) / dy : (dy < 0 ? (y1 - my) / dy : Infinity));
+        const ty1 = (dy > 0 ? (y1 - my) / dy : (dy < 0 ? (y0 - my) / dy : Infinity));
+        const tIn = Math.max(Math.min(tx0, tx1), Math.min(ty0, ty1));
+        const tOut = Math.min(Math.max(tx0, tx1), Math.max(ty0, ty1));
+        if (tOut > 0 && tIn <= tOut && tIn > 0) tMax = Math.min(tMax, tIn);
+      };
+      if (lv) for (const p of lv.pillars) clipSlab(p.x, p.x + p.w, p.top, this.groundY);
+      clipSlab(-1e9, 1e9, this.groundY + 30, 1e9);           // floor
+      clipSlab(-1e9, 4, -1e9, 1e9);                            // left edge
+      clipSlab(this.levelWidth - 4, 1e9, -1e9, 1e9);           // right edge
+      const ex = mx + dx * tMax, ey = my + dy * tMax;
+      // Pulse: brighter as the fire frame approaches; last 5 frames strobe.
+      const prog = Math.min(1, s.attackFrame / (atk.startup + 1));
+      const strobe = s.attackFrame >= atk.startup - 3
+        ? (Math.floor(s.attackFrame / 2) % 2 ? 1 : 0.45) : 1;
+      const alpha = (0.15 + 0.55 * prog) * strobe;
+      g.lineStyle(1.5, 0xff5555, alpha);
+      g.lineBetween(mx, my, ex, ey);
+      g.fillStyle(0xff5555, alpha * 0.9);            // endpoint pip
+      g.fillCircle(ex, ey, 2.2);
+    }
+  }
+
   renderBullets() {
     if (!this.bulletGfx && !(this.bullets && this.bullets.length)) return;  // never drawn yet
     if (!this.bulletGfx) { this.bulletGfx = this.add.graphics(); this.bulletGfx.setDepth(5); }
@@ -835,6 +885,7 @@ class FightScene extends Phaser.Scene {
   renderAll() {
     for (const f of this.fighters) { if (!f.dead) f.render(); else if (f.ragdoll) f.renderRagdoll(); }
     this.renderBullets();
+    this.renderSights();
     this.updateCamera();
 
     // HUD health bars.
