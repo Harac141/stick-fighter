@@ -31,20 +31,19 @@ window.LEVELS = {
       { x: 2150, count: 4, trigger: 900 },
     ],
   },
-  // Rooftops: one pit with a platform route across, fire-escape ledges,
-  // trigger-gated waves, two elites guarding the far spawn.
+  // Rooftops: fire-escape ledges, trigger-gated waves, two elites guarding
+  // the far spawn. NO PITS (user: mooks walk into them and knockback can't
+  // push anyone in — pit-gap floors are retired until enemies can interact
+  // with them; the floor-gap mechanic stays available in the loader).
   rooftop: {
     width: 3600,
     sky: [0x141a2e, 0x33284e],
     p1x: 140, respawnX: 120,
-    floors: [
-      { x: 0, w: 1450 },
-      { x: 1700, w: 1900 },
-    ],
+    floors: [{ x: 0, w: 3600 }],
     platforms: [
-      { x: 1150, w: 230, y: -110 },   // step up before the pit
-      { x: 1440, w: 270, y: -190 },   // across the pit (high)
-      { x: 1870, w: 230, y: -105 },   // step down after the pit
+      { x: 1150, w: 230, y: -110 },   // step up
+      { x: 1440, w: 270, y: -190 },   // high route (over the mook scrum below)
+      { x: 1870, w: 230, y: -105 },   // step down
       { x: 2520, w: 310, y: -205 },   // ledge wall to hop
       { x: 2990, w: 240, y: -115 },
     ],

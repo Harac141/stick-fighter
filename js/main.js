@@ -156,8 +156,13 @@ class FightScene extends Phaser.Scene {
   }
 
   // Slab span containing x at a given surface top (edge-fall detection).
+  // The top arg MUST be honored on the floor branch too: floors all sit at
+  // groundY, so a stale _platSolid with a platform-height _plat (510) must
+  // NOT match the full-width floor span — that read as "slab still under
+  // us" forever and let a fighter walk off a platform into Wile E. Coyote
+  // air-standing until the next jump.
   spanAt(top, x, solidFloor) {
-    if (solidFloor) {
+    if (solidFloor && top === this.groundY) {
       for (const fl of (this.level ? this.level.floors : [{ x: 0, w: this.levelWidth }]))
         if (x >= fl.x && x <= fl.x + fl.w) return { x0: fl.x, x1: fl.x + fl.w };
       for (const fl of (this.level ? this.level.floors : []))
@@ -166,7 +171,10 @@ class FightScene extends Phaser.Scene {
     }
     for (const p of (this.level ? this.level.platforms : []))
       if (p.top === top && x >= p.x - 32 && x <= p.x + p.w + 32) return { x0: p.x, x1: p.x + p.w };
-    return { x0: -1e9, x1: 1e9 };
+    // MUST return null off the edge: a truthy fallback here read as "slab
+    // still under us" forever, so walking off a platform kept the riding
+    // rule satisfied — Wile E. Coyote standing on air until a jump broke it.
+    return null;
   }
 
   // A mook fell into a pit: outright death, corpse ragdolls into the void.
