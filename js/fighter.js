@@ -114,6 +114,33 @@ const CFG = {
       knock: { x: 520, y: -360, hitstun: 26 },
       cooldown: 14,
     },
+    // ---- KATANA starter character (user: "a character with a sword", just
+    // neutral light + heavy, both block bullets). Neutral-only: selectAttack
+    // routes plain J / K to these when weapon==='katana'; W/S/air/dash fall
+    // through to the normal body grammar (a starter, not a full moveset).
+    // `guard` is a box published for the WHOLE wind-up+active window that
+    // deflects bullets (guardBoxes pass) but never damages fighters — so
+    // blocking is timing-lenient, unlike the damaging active hitbox.
+    katLight: {
+      weapon: 'katana',
+      startup: 4, active: 4, recovery: 7,       // quick horizontal slash
+      damage: 7, lunge: 220,
+      pose: 'slashL',
+      box:   { x: 34, y: -8, w: 62, h: 30 },    // chest-line cut
+      guard: { x: 26, y: -22, w: 74, h: 66 },   // tall arc: catches chest bullets
+      knock: { x: 340, y: -120, hitstun: 14 },
+      cooldown: 10,
+    },
+    katHeavy: {
+      weapon: 'katana',
+      startup: 9, active: 5, recovery: 18,       // committed diagonal cleave
+      damage: 17, lunge: 520,
+      pose: 'slashH',
+      box:   { x: 30, y: -4, w: 74, h: 54 },    // big reach cleave
+      guard: { x: 22, y: -34, w: 86, h: 92 },   // wide guard: deflects the lane
+      knock: { x: 560, y: -300, hitstun: 24 },
+      cooldown: 16,
+    },
     // ---- Contextual variants (two buttons + context, Smash/Kirby style) ----
     // pose tags drive computePose; air:true = airborne legs; hitFrames = multi-hit;
     // knockScale = knockback grows with attacker speed; meteor = downward spike.
@@ -271,6 +298,11 @@ class Fighter {
 
     // Hitboxes (spawned fresh per attack active window).
     this.hitboxes = [];        // {x,y,w,h,...} world-space rect (left,top,w,h)
+    // Bullet-guard boxes (katana): published for the WHOLE wind-up+active
+    // window so blocking is timing-lenient. Deliberately NOT in hitboxes[] —
+    // resolveHits never sees these, so a guard deflects steel but never cuts
+    // flesh by accident.
+    this.guardBoxes = [];
   }
 
   // Ground truth comes from the scene (levels: floors[] AND one-way
@@ -562,6 +594,11 @@ class Fighter {
     const H = !!input.heavy, L = !!input.jab;
     if (!H && !L) return null;
     if (this.state === 'dash' && this.dashTimer > 0) return 'dashatk';
+    // KATANA starter (user spec): NEUTRAL J / K become slashes when grounded
+    // with no W/S modifier. Everything else (air, W/S contexts, dash) falls
+    // through to the shared body grammar — a starter moveset, not a full one.
+    if (this.weapon === 'katana' && !this.airborne && !input.up && !input.down)
+      return H ? 'katHeavy' : 'katLight';
     if (this.airborne) {
       // W is the ONLY up-indicator (no jump-timing guesswork — that was the
       // untimable "rising" heuristic). air K always = axe kick.
@@ -651,6 +688,12 @@ class Fighter {
     // Multi-hit (hitFrames = [f1, f2]): each frame opens a fresh 2-frame
     // window with its own hit-landed flag — the cartwheel's tick-then-pop.
     this.hitboxes.length = 0;
+    // Sword guard: the blade is "up" for the entire wind-up AND active
+    // window, so a katana blocks bullets on reaction (frames 0..active), not
+    // only on the 3 damaging active frames. Separate array: no damage.
+    this.guardBoxes.length = 0;
+    if (atk.guard && this.attackFrame >= 1 && this.attackFrame <= activeEnd)
+      this.guardBoxes.push(this.attackWorldBox(atk, atk.guard));
     // Gun: the aim COMMITS at atk.aimLock (a few frames before the fire
     // frame) and never tracks again — moving off the line genuinely dodges.
     // The committed vector lives on the fighter so renderSights can draw the
@@ -701,6 +744,7 @@ class Fighter {
     if (this.attackFrame >= activeStart + atk.active + atk.recovery) {
       this.currentAttack = null;
       this.hitboxes.length = 0;
+      this.guardBoxes.length = 0;
       this.state = this.airborne ? 'fall' : 'idle';
     }
     // Slight forward step on the ground during startup+active of lunging
@@ -714,15 +758,16 @@ class Fighter {
     }
   }
 
-  attackWorldBox(atk) {
-    const cx = this.x + this.facing * atk.box.x;
-    const cy = this.y + atk.box.y;
+  attackWorldBox(atk, boxOverride) {
+    const bx = boxOverride || atk.box;
+    const cx = this.x + this.facing * bx.x;
+    const cy = this.y + bx.y;
     // box.x is "distance from center"; convert to a left/top rect.
     return {
-      x: this.facing === 1 ? cx : cx - atk.box.w,
-      y: cy - atk.box.h / 2,
-      w: atk.box.w,
-      h: atk.box.h,
+      x: this.facing === 1 ? cx : cx - bx.w,
+      y: cy - bx.h / 2,
+      w: bx.w,
+      h: bx.h,
       damage: atk.damage,
       // knockScale: attacker speed feeds knockback (dash attack at 560
       // slams mooks clean across the arena — momentum-through-attacks).
@@ -747,6 +792,7 @@ class Fighter {
     this.dead = true;
     this.currentAttack = null;
     this.hitboxes.length = 0;
+    this.guardBoxes.length = 0;   // a corpse blocks nothing
     this.state = 'hurt';
     if (this.ai) this.aiIn = {};   // brain hands off permanently
     const K = CFG.ragdoll;
@@ -1019,6 +1065,7 @@ class Fighter {
     if (this.onGround) this.body.setVelocityY(hb.knock.y);
     this.currentAttack = null;
     this.hitboxes.length = 0;
+    this.guardBoxes.length = 0;
     this.chainStep = 0;       // getting hit forfeits the jab string
     this.aimVec = null;       // a shot interrupted after its aim lock dies with it
     this.state = 'hurt';
@@ -1071,6 +1118,31 @@ class Fighter {
         g.fillStyle(0xffe08a, 1);
         g.fillCircle(hx + f * 16, hy, 4.5);
       }
+    }
+
+    // KATANA: the blade rides the front arm (elbow->hand direction), so the
+    // slash POSE steers it — no separate angle state, and it inherits every
+    // IK/blending property of the arm. A faint guard shimmer shows the bullet
+    // block window (guardBoxes active through wind-up+active).
+    if (this.weapon === 'katana') {
+      const hxx = pose.handB.x, hyy = pose.handB.y;
+      let dx = hxx - pose.elbowB.x, dy = hyy - pose.elbowB.y;
+      const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
+      const BLADE = 46;
+      const tipx = hxx + dx * BLADE, tipy = hyy + dy * BLADE;
+      // guard shimmer (block window): a soft swept band along the blade.
+      if (this.guardBoxes.length) {
+        g.lineStyle(9, 0x9fd0ff, 0.18);
+        g.lineBetween(hxx - dx * 6, hyy - dy * 6, tipx, tipy);
+      }
+      // blade (steel, tapered feel via a thin bright edge).
+      g.lineStyle(3.5, 0xdfe6f2, 1);
+      g.lineBetween(hxx, hyy, tipx, tipy);
+      g.lineStyle(1.5, 0xffffff, 0.9);
+      g.lineBetween(hxx + dx * 6, hyy + dy * 6 - 1, tipx, tipy);   // glint
+      // crossguard perpendicular at the grip.
+      g.lineStyle(3, 0xb8863b, 1);
+      g.lineBetween(hxx - dy * 5, hyy + dx * 5, hxx + dy * 5, hyy - dx * 5);
     }
 
     // Debug boxes: hurtbox (cyan) + active hitbox (red).
@@ -1270,6 +1342,12 @@ class Fighter {
         } else if (atk.pose === 'airjab') {     // compact, legs tuck slightly
           lean = 0.14;
           footF = P(f * 12, feetY - 8); footB = P(-f * 14, feetY - 12);
+        } else if (atk.pose === 'slashL') {     // katana light: quick step-in cut
+          lean = act ? 0.14 : 0.02;
+          footF = P(f * (act ? 20 : 12), feetY); footB = P(-f * (act ? 20 : 16), feetY);
+        } else if (atk.pose === 'slashH') {     // katana heavy: committed cleave lunge
+          lean = act ? 0.3 : -0.12;             // coil back, then commit through
+          footF = P(f * (act ? 28 : 10), feetY); footB = P(-f * (act ? 30 : 22), feetY - (act ? 6 : 0));
         } else if (atk.pose === 'shoot') {      // gunner: feet planted, slight recoil lean
           lean = act ? 0.10 : -0.03;
           footF = P(f * 20, feetY); footB = P(-f * 22, feetY);
@@ -1421,6 +1499,31 @@ class Fighter {
         } else {
           handF = P(f * 14, feetY - 58); handB = P(-f * 6, feetY - 62);   // settle off the throw
         }
+      } else if (atk.pose === 'slashL') {       // katana light: horizontal cut
+        if (fr <= atk.startup) {                       // draw: hand back at the hip
+          handF = P(-f * 10, feetY - 52); handB = P(f * 6, feetY - 64);
+        } else if (act) {                              // cut across the chest line
+          const ka = (fr - atk.startup) / Math.max(1, atk.active);
+          uArmF += 4; fArmF += 4;
+          handF = P(f * (14 + (atk.box.x + atk.box.w - 26) * ka), feetY - 62);
+          handB = P(-f * 8, feetY - 66);               // rear hand up in guard
+        } else {
+          handF = P(f * 18, feetY - 60); handB = P(-f * 6, feetY - 64);   // recover to guard
+        }
+      } else if (atk.pose === 'slashH') {       // katana heavy: overhead-to-low cleave
+        if (fr <= atk.startup) {                        // wind up: blade high behind
+          uArmF += 8; fArmF += 8;
+          handF = P(-f * 20, feetY - 100); handB = P(-f * 6, feetY - 70);
+        } else if (act) {                               // sweep down-forward
+          const ka = (fr - atk.startup) / Math.max(1, atk.active);
+          uArmF += 8; fArmF += 8;
+          const ang = -1.25 + 1.9 * ka;                 // overhead-back to low-forward
+          const rad = atk.box.x + atk.box.w - 22;
+          handF = P(f * rad * Math.cos(ang + 0.35), feetY - 66 - rad * Math.sin(ang) * 0.6);
+          handB = P(f * rad * 0.5 * Math.cos(ang + 0.35) - f * 6, feetY - 66 - rad * 0.5 * Math.sin(ang) * 0.6);
+        } else {
+          handF = P(f * 30, feetY - 44); handB = P(f * 10, feetY - 56);   // settle low
+        }
       } else if (atk.pose === 'shoot') {          // two-handed aim, gun at eye line
         const aim = fr <= atk.startup ? Math.min(1, fr / Math.max(1, atk.startup)) : (act ? 1 : 0.75);
         handF = P(f * (10 + 26 * aim), feetY - 62);
@@ -1492,7 +1595,13 @@ class Fighter {
       handB = B.hand; elbowB = B.elbow;
     } else {                                        // idle breathing guard
       const bob = Math.sin(this.animTime * 3) * 1.5;
-      handF = P(f * 16, feetY - 64 + bob); handB = P(f * 4, feetY - 66 + bob);
+      if (this.weapon === 'katana') {
+        // Blade held out forward and slightly down, rear hand tucked at the
+        // chest (two-hand sword stance). The blade rides the front-arm dir.
+        handF = P(f * 26, feetY - 52 + bob); handB = P(f * 2, feetY - 62 + bob);
+      } else {
+        handF = P(f * 16, feetY - 64 + bob); handB = P(f * 4, feetY - 66 + bob);
+      }
     }
 
     const fkElbows = elbowF !== null && elbowB !== null;  // FK arm layer (gait) owns elbows

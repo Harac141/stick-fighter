@@ -33,6 +33,21 @@
   }
 
   let doc = blank();
+  // Any map entering `doc` from outside (localStorage via ?edit=/templates,
+  // hand-edited or older saves) is normalized: draw() reads sky/floors
+  // unguarded, and one throw inside the rAF loop kills the editor canvas
+  // permanently (observed: a sky-less hand-seeded map = blank editor).
+  function normalize(d) {
+    d.width = Math.max(1280, Math.min(8192, Number(d.width) || 2600));
+    if (!Array.isArray(d.sky) || d.sky.length !== 2 || d.sky.some((n) => !Number.isFinite(n)))
+      d.sky = SKIES[0].sky.slice();
+    if (!Number.isFinite(d.p1x)) d.p1x = 200;
+    if (!Number.isFinite(d.respawnX)) d.respawnX = 160;
+    if (!Array.isArray(d.floors) || !d.floors.length) d.floors = [{ x: 0, w: d.width }];
+    if (!Array.isArray(d.pillars)) d.pillars = [];
+    if (!Array.isArray(d.spawns)) d.spawns = [];
+    return d;
+  }
   let tool = 'select';
   let sel = null;              // {kind:'pillar'|'spawn'|'p1', i}
   let camX = 1300, zoom = 1;   // view centre (world px) / zoom
@@ -387,8 +402,7 @@
     if (!v) return;
     snap();
     const src = v.startsWith('lvl:') ? window.LEVELS[v.slice(4)] : customs[v.slice(5)];
-    doc = JSON.parse(JSON.stringify(src || blank()));
-    doc.width = doc.width || 2600;
+    doc = normalize(JSON.parse(JSON.stringify(src || blank())));
     syncFields(); sel = null; drawProps();
     camX = doc.width / 2;
     status('loaded ' + v);
@@ -509,6 +523,25 @@
         ctx.strokeStyle = 'rgba(255,143,90,0.5)'; ctx.setLineDash([3, 5]);
         ctx.beginPath(); ctx.moveTo(sx(sp.trigger), sy(GROUND) - 8); ctx.lineTo(sx(sp.trigger), sy(GROUND) + 8); ctx.stroke();
         ctx.setLineDash([]);
+        // Selected spawn: show its FULL trigger line — the x where p1 must
+        // walk to arm this gang (user asked for it: the tick alone was too
+        // easy to miss, and its distance-to-spawn is the thing you tune).
+        if (sel && sel.kind === 'spawn' && sel.i === i) {
+          ctx.strokeStyle = 'rgba(255,143,90,0.9)'; ctx.setLineDash([6, 6]); ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(sx(sp.trigger), 0); ctx.lineTo(sx(sp.trigger), sy(GROUND)); ctx.stroke();
+          // connect trigger -> spawn cluster so the "walk here, they come" read is instant
+          ctx.setLineDash([2, 4]); ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(sx(sp.trigger), sy(GROUND) - 46 * zoom);
+          ctx.lineTo(px, sy(GROUND) - 46 * zoom); ctx.stroke();
+          ctx.setLineDash([]); ctx.lineWidth = 2;
+          ctx.fillStyle = '#ff8f5a'; ctx.font = '11px monospace';
+          ctx.fillText('trigger @ ' + sp.trigger + '  (walk here)', sx(sp.trigger) + 6, 24);
+          const dist = Math.round(effX(sp) - sp.trigger);
+          ctx.fillText('+' + dist + 'px ahead', sx(sp.trigger) + 6, 40);
+        }
+      } else if (sel && sel.kind === 'spawn' && sel.i === i) {
+        ctx.fillStyle = '#5b6a94'; ctx.font = '11px monospace';
+        ctx.fillText('no trigger (waves with previous)', px - 60 * zoom, 24);
       }
     });
     // p1 — same true scale as the spawn figures (it IS the player body).
@@ -539,7 +572,7 @@
   if (edit) {
     const fromLS = loadLS()[edit];
     const src = fromLS || (window.LEVELS && window.LEVELS[edit]);
-    if (src) { doc = JSON.parse(JSON.stringify(src)); nameEl.value = edit; status('editing "' + edit + '"'); }
+    if (src) { doc = normalize(JSON.parse(JSON.stringify(src))); nameEl.value = edit; status('editing "' + edit + '"'); }
     else status('"' + edit + '" not found', true);
   } else if (params.get('new') !== null) {
     doc = blank();

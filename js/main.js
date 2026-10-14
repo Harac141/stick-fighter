@@ -348,6 +348,13 @@ class FightScene extends Phaser.Scene {
     this.p1 = new Fighter(this, p1x, this.groundY, 1, 0xf2f2f2);
     this.p2 = new Fighter(this, mid + 220, this.groundY, -1, 0x9ad0ff);
     this.p1.inputKey = 'p1'; this.p2.inputKey = 'p2';   // map to keyboard input slots
+    // Starter character select (?char=..., user's request): katana = sword
+    // stance, neutral J/K become slashes, both block bullets (guard boxes).
+    // Full character-select UI comes later; URL boot is the test bed.
+    if (new URLSearchParams(location.search).get('char') === 'katana') {
+      this.p1.weapon = 'katana';
+      this.p1.color = 0xbfe8d8;             // jade-tinted so it reads as ITS guy
+    }
     // Master roster: everyone the sim steps, hits and separates. p1/p2 stay
     // as named refs (input + HUD); mooks append here (ai-driven).
     this.fighters = [this.p1, this.p2];
@@ -769,7 +776,14 @@ class FightScene extends Phaser.Scene {
     // (the katana hook — a punch can bat one away today), then integrate.
     {
       const boxes = [];
-      for (const f of this.fighters) if (!f.dead) for (const hb of f.hitboxes) boxes.push(hb);
+      for (const f of this.fighters) {
+        if (f.dead) continue;
+        for (const hb of f.hitboxes) boxes.push(hb);
+        // Sword GUARD boxes: block the whole wind-up (see Fighter.tickAttack)
+        // — separate array, so the blade deflects steel without ever cutting
+        // a fighter outside its damaging active frames.
+        for (const gb of f.guardBoxes) boxes.push(gb);
+      }
       if (boxes.length) this.swatBullets(boxes);
     }
     this.stepBullets();
