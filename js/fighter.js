@@ -1076,36 +1076,54 @@ class Fighter {
   }
 
   // ---- Rendering ----------------------------------------------------------
-  // Katana wrist angle: the blade is its OWN rigid object gripped at the
-  // hand, NOT a forearm extension (user: "it's just his arm, but longer —
-  // it should have a joint"). Facing-space radians (0 = forward, + = down);
-  // render() lag-blends this._bladeAng toward the target so the tip TRAILS
-  // the swing and whips through — the forearm-to-blade kink IS the wrist.
-  // During the CUTS the target is the LIVE forearm direction (a scripted
-  // absolute sweep fought the IK arm and folded the blade back under the
-  // armpit — kink >2.5rad measured); the lag against a fast-moving forearm
-  // is what produces the whip. Posture targets only apply off-swing.
-  bladeAngleTarget(foreAng) {
+  // Katana wrist angle: fully ANIMATED keyframe curve (user: the lag-blend
+  // "carried posture" looked weird attacking/running/walking — animate the
+  // angle directly). Facing-space radians (0 = forward, + = down). Attacks
+  // get a proper timeline (sheath/draw/cut/settle — recovery ANIMATES back
+  // to guard instead of snapping to a static posture), walk/sprint sway the
+  // blade with the gait cycle, render() applies a light smoothing only to
+  // de-pop state transitions (render-only; combat never sees this).
+  bladeAngleTarget() {
     const atk = this.currentAttack && CFG.attacks[this.currentAttack];
-    const slashL = this.state === 'attack' && atk && atk.pose === 'slashL';
-    const slashH = this.state === 'attack' && atk && atk.pose === 'slashH';
-    if (slashL || slashH) {
+    if (this.state === 'attack' && atk && (atk.pose === 'slashL' || atk.pose === 'slashH')) {
+      const light = atk.pose === 'slashL';
       const fr = this.attackFrame;
-      const active = fr > atk.startup && fr <= atk.startup + atk.active;
-      if (!active) {
-        // wind-up: sheath (light draws from low-back) / raise (heavy back-overhead)
-        return slashL ? 2.8 : -2.3;
+      const su = atk.startup, ac = atk.active, rec = atk.recovery;
+      const ease = (t) => t * t * (3 - 2 * t);            // smoothstep
+      if (fr <= su) {
+        // wind-up from the guard the fighter already HOLDS (a sheath start
+        // teleported the blade 2.6rad on frame 1 — the light is a snap-cut,
+        // not an iai draw).
+        const k = ease(Math.min(1, fr / su));
+        return light ? -0.12 + (1.15 + 0.12) * k          // drop hand+blade back-low (coil)
+                     : -0.12 + (-2.3 + 0.12) * k;         // guard -> raised back
       }
-      // cut: blade tracks the forearm with a small laid-back offset (the
-      // wrist stays bent INTO the swing edge, like a real draw-cut).
-      return foreAng + (slashL ? 0.12 : 0.25);
+      if (fr <= su + ac) {
+        // the cut itself: scripted sweep (this is THE animation).
+        const k = ease((fr - su) / Math.max(1, ac));
+        return light ? 1.15 + (-0.15 - 1.15) * k          // hip -> flat forward
+                     : -2.3 + (1.3 + 2.3) * k;            // overhead-back -> low forward
+      }
+      // recovery: animate back to the guard rest — the old static postures
+      // teleported the blade here mid-retract (the 'weird' the user saw).
+      const k = ease(Math.min(1, (fr - su - ac) / Math.max(1, rec * 0.7)));
+      const from = light ? -0.15 : 1.3;
+      return from + (-0.12 - from) * k;
     }
-    if (this.state === 'hurt') return 1.5;                     // hangs from the wrist
-    if (this.state === 'dash') return -2.8;                    // trails flat behind
-    if (this.airborne) return -2.1;                            // carried back-up in flight
-    if (this.state === 'run') return -2.4;                     // carried back-up at sprint
-    return -0.12;                                              // ready guard: flat, muzzle-up
+    if (this.state === 'hurt') return 1.5;                // hangs from the wrist
+    if (this.state === 'dash' && this.dashTimer > 0) return -2.6;  // leap: trails flat
+    if (this.airborne) return -2.1;                       // carried back-up in flight
+    if (this.state === 'run' || (this.state === 'dash' && !this.airborne)) {
+      // walk/sprint: blade SWAYS with the gait (counterphase to the front
+      // arm pendulum) — a rigid carried angle looked frozen next to pumping
+      // arms. Carried up-and-forward, swinging +-25deg per stride.
+      const amp = this.state === 'dash' ? 0.55 : 0.42;
+      return -0.55 + amp * Math.cos(2 * Math.PI * this.cyclePhase);
+    }
+    // idle guard: flat, muzzle-up, tiny breathing bob.
+    return -0.12 + Math.sin(this.animTime * 3) * 0.05;
   }
+
 
   // Poses are NOT pre-rendered frames: computePose runs live every frame and
   // the result is BLENDED into the previous render pose (joint-target lerp +
@@ -1156,19 +1174,18 @@ class Fighter {
     // between forearm and blade reads as the joint the straight version
     // lacked. A faint guard shimmer marks the bullet-block window.
     if (this.weapon === 'katana') {
-      // facing-space forearm angle of the blade hand (handB == front hand).
-      const foreA = Math.atan2(pose.handB.y - pose.elbowB.y,
-        (pose.handB.x - pose.elbowB.x) * f);
-      const tgt = this.bladeAngleTarget(foreA);
+      // The wrist angle is fully keyframed (bladeAngleTarget) now; the only
+      // smoothing here is a short lerp to de-pop STATE transitions (guard ->
+      // wind-up, run -> idle). During an attack we snap to the keyframe
+      // (W=1) so the animation reads exactly as authored — the old adaptive
+      // lag was what made attacks/running look wrong.
+      const tgt = this.bladeAngleTarget();
       if (typeof this._bladeAng !== 'number') this._bladeAng = tgt;
-      // Adaptive wrist: faster follow DURING active swings (the cut must stay
-      // pointed with its hand — a loose wrist folded the blade ~143deg back
-      // mid-snap), slower settle elsewhere so posture changes get a soft
-      // whip tail (tip trails when starting/stopping).
-      const atkW = this.currentAttack && CFG.attacks[this.currentAttack];
-      const activeNow = this.state === 'attack' && atkW
-        && this.attackFrame > atkW.startup && this.attackFrame <= atkW.startup + atkW.active;
-      const W = activeNow ? 0.72 : 0.38;
+      const attacking = this.state === 'attack' && this.currentAttack
+        && CFG.attacks[this.currentAttack]
+        && (CFG.attacks[this.currentAttack].pose === 'slashL'
+            || CFG.attacks[this.currentAttack].pose === 'slashH');
+      const W = attacking ? 1 : 0.5;
       let dd = tgt - this._bladeAng;
       while (dd > Math.PI) dd -= 2 * Math.PI;
       while (dd < -Math.PI) dd += 2 * Math.PI;
