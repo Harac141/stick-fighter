@@ -313,10 +313,14 @@ class Fighter {
     if (this.dashCooldown > 0) this.dashCooldown--;
     if (this.attackCooldown > 0) {
       this.attackCooldown--;
-      // Buffered chain continuation: pressed during the tax window — fire the
-      // next link the instant the cooldown lifts (once you've committed to
-      // the string, the tax only gates the NEXT string, not this one).
-      if (this.attackCooldown === 0 && this.chainQueued && !this.currentAttack
+      // Buffered chain continuation. THE TAX NEVER GATES A LINK (user: pop 2
+      // lagged badly behind pop 1): a short link like jab1 (10 frames) ends
+      // while its 22f cooldown is still burning, so a natural-speed second
+      // tap arrived post-attack and waited out the whole lone-tap tax — 367ms
+      // gap vs 167ms for the finisher. The string's own clock (chainWindow)
+      // is the only gate once you've committed; startAttack overwrites the
+      // cooldown anyway. The tax still gates the NEXT string (selectAttack).
+      if (this.chainQueued && !this.currentAttack
           && !this.ai && !this.airborne && this.chainStep >= 1 && this.chainStep <= 2
           && this.chainT <= this.chainWindow) {
         this.startAttack(this.chainStep === 1 ? 'jab2' : 'finisher');
