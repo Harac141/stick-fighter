@@ -1102,23 +1102,29 @@ class Fighter {
         const k = Math.min(1, (fr - su - ac) / Math.max(1, rec * 0.7));
         return -0.15 + (-0.12 + 0.15) * ease(k);
       }
-      // HEAVY (user): two-handed cleave — blade COCKED at an angle while it
-      // comes UP, then swings to PARALLEL with the forearm as it comes DOWN.
-      // Relative to the live forearm (foreAng): raised = foreAng + COCK (edge
-      // laid back over the head), active = foreAng + blend(COCK -> 0), so the
-      // edge lines up with the arm exactly on the chop.
-      const COCK = 1.15;                                  // blade laid back of the raised forearm
+      // HEAVY — worked from the reference sheet's overhead-chop sequence
+      // (user uploaded 2fef...jpg: twisted coil wind-up with the blade held
+      // HORIZONTAL while the forearms point up — blade laid BACK over the
+      // head, perpendicular to the forearm — then the cut, then a crouched
+      // follow-through where the blade TRAILS downward off the forearm).
+      // Relative to the live forearm (foreAng); negative kink = laid back.
+      const COCK = 1.45;                                  // ~perp: horizontal over a raised arm
       if (fr <= su) {
-        return foreAng + COCK;                            // held cocked through the wind-up
+        // Raised pose per the sheet: blade laid BACK over the head (~1.45 rad
+        // behind the up-pointing forearm = ~horizontal, tip behind). No seam
+        // special-casing: angles crossing +-pi are geometrically fine now
+        // that _bladeAng itself wraps every frame (a guard here once laid the
+        // blade FORWARD on the raised arm because "up" is NEGATIVE angles).
+        return foreAng - COCK;
       }
       if (fr <= su + ac) {
-        const k = ease((fr - su) / Math.max(1, ac));      // cock -> parallel as it falls
-        return foreAng + COCK * (1 - k);
+        const k = ease((fr - su) / Math.max(1, ac));      // laid-back -> parallel as it falls
+        return foreAng - COCK * (1 - k);
       }
       const k = Math.min(1, (fr - su - ac) / Math.max(1, rec * 0.9));
       const hold = 0.5, k2 = Math.max(0, (k - hold) / (1 - hold));
-      const from = foreAng;                               // follow-through: edge with the arm
-      return from + (-0.12 - from) * ease(k2);
+      const trail = foreAng + 0.45;                       // release: tip drops past the hand
+      return trail + (-0.12 - trail) * ease(k2);
     }
     if (this.state === 'hurt') return 1.5;                // hangs from the wrist
     if (this.state === 'dash' && this.dashTimer > 0) return -2.6;  // leap: trails flat
@@ -1203,6 +1209,11 @@ class Fighter {
       while (dd > Math.PI) dd -= 2 * Math.PI;
       while (dd < -Math.PI) dd += 2 * Math.PI;
       this._bladeAng += dd * W;
+      // WRAP THE STATE, not just the delta: near a target of +-pi (blade
+      // raised straight up) a lag-blended angle accumulates outside [-pi,pi]
+      // and never returns (measured: blade froze at -8rad through the chop).
+      while (this._bladeAng > Math.PI) this._bladeAng -= 2 * Math.PI;
+      while (this._bladeAng < -Math.PI) this._bladeAng += 2 * Math.PI;
       const hxx = pose.handB.x, hyy = pose.handB.y;
       const bdx = Math.cos(this._bladeAng) * f, bdy = Math.sin(this._bladeAng);
       const BLADE = 46;
@@ -1428,8 +1439,21 @@ class Fighter {
           lean = act ? 0.14 : 0.02;
           footF = P(f * (act ? 20 : 12), feetY); footB = P(-f * (act ? 20 : 16), feetY);
         } else if (atk.pose === 'slashH') {     // katana heavy: committed cleave lunge
-          lean = act ? 0.3 : -0.12;             // coil back, then commit through
-          footF = P(f * (act ? 28 : 10), feetY); footB = P(-f * (act ? 30 : 22), feetY - (act ? 6 : 0));
+          // Reference-sheet choreography: COILED wind-up (twist/back-pitch,
+          // slight squat load), then a deeply crouched follow-through — the
+          // sheet's chop lands in a low committed crouch, hands near the
+          // knee, blade trailing. (was: flat feet + modest lean)
+          if (fr <= atk.startup) {
+            lean = -0.18; hipY = feetY - 36;              // coil: pitch back, load the legs
+            footF = P(f * 12, feetY); footB = P(-f * 24, feetY);
+          } else if (fr <= atk.startup + atk.active) {
+            lean = 0.34; hipY = feetY - 30;               // commit through + CROUCH
+            footF = P(f * 30, feetY); footB = P(-f * 32, feetY - 8);
+          } else {
+            const kk = Math.min(1, (fr - atk.startup - atk.active) / Math.max(1, atk.recovery * 0.6));
+            lean = 0.34 - 0.22 * kk; hipY = feetY - (30 + 8 * kk);   // hold crouch, then rise
+            footF = P(f * (30 - 12 * kk), feetY); footB = P(-f * (32 - 10 * kk), feetY - 8);
+          }
         } else if (atk.pose === 'shoot') {      // gunner: feet planted, slight recoil lean
           lean = act ? 0.10 : -0.03;
           footF = P(f * 20, feetY); footB = P(-f * 22, feetY);
@@ -1602,7 +1626,9 @@ class Fighter {
         const ease = (t) => t * t * (3 - 2 * t);
         const P2 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
         // (fx, height above feet); f-multiplied on x at use.
-        const GUARD = [22, 60], OVER = [-6, 98], LOW = [42, 28];
+        // Reference sheet: OVER pulls back past vertical (coil), LOW lands at
+        // KNEE height in the crouch (the chop finishes near the ground).
+        const GUARD = [22, 60], OVER = [-10, 96], LOW = [46, 22];
         const RGUARD = [-10, 62];                        // rear hand at rest (guard)
         // Rear hand on the shoulder->front-hand line ~12px off the grip:
         // always in reach (t capped at 34 vs the 37px arm) — pinning it at a
