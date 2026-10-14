@@ -91,13 +91,15 @@
     }
     for (let i = doc.spawns.length - 1; i >= 0; i--) {
       const sp = doc.spawns[i];
-      const px = sx(effX(sp)), py = sy(spawnY(sp)) - 26 * zoom;
-      if (Math.abs(mx - px) < 20 * zoom + 4 && Math.abs(my - py) < 30 * zoom + 4)
+      const px = sx(effX(sp)), py = sy(spawnY(sp));
+      // Hit box covers the true-scale row of figures (bodies stand 92px up).
+      const halfRow = ((sp.count - 1) * 56 / 2 + 16) * zoom;
+      if (Math.abs(mx - px) < halfRow && my < py + 6 && my > py - 100 * zoom)
         return { kind: 'spawn', i };
     }
     {
-      const px = sx(doc.p1x), py = sy(GROUND) - 30 * zoom;
-      if (Math.abs(mx - px) < 16 * zoom + 4 && Math.abs(my - py) < 36 * zoom + 4)
+      const px = sx(doc.p1x), py = sy(GROUND);
+      if (Math.abs(mx - px) < 20 * zoom + 4 && my < py + 6 && my > py - 92 * zoom)
         return { kind: 'p1' };
     }
     for (let i = doc.pillars.length - 1; i >= 0; i--) {
@@ -484,19 +486,23 @@
     // spawn zones
     doc.spawns.forEach((sp, i) => {
       const t = spawnType(sp);
-      const ex = effX(sp), ey = spawnY(sp);
-      const px = sx(ex), py = sy(ey);
+      const px = sx(effX(sp)), py = sy(spawnY(sp));
+      // True 1:1 scale: s = 92/52 makes the stickman exactly the game's 92px
+      // body at zoom 1 (the user reads these as the ruler — must not lie).
+      // SPACING 56 = fireZone's per-mook cluster step.
+      const SPACING = 56;
       for (let c = 0; c < sp.count; c++) {
-        stickman(px + (c - (sp.count - 1) / 2) * 16 * zoom, py, TYPE_COLOR[t], zoom * 0.55);
+        stickman(px + (c - (sp.count - 1) / 2) * SPACING * zoom, py, TYPE_COLOR[t], zoom * (92 / 52));
       }
       if (sel && sel.kind === 'spawn' && sel.i === i) {
         ctx.strokeStyle = '#ffe066'; ctx.setLineDash([4, 4]);
-        ctx.strokeRect(px - (sp.count * 8 + 10) * zoom, py - 56 * zoom, (sp.count * 16 + 20) * zoom, 60 * zoom);
+        ctx.strokeRect(px - ((sp.count - 1) * SPACING / 2 + 20) * zoom, py - 98 * zoom,
+                       ((sp.count - 1) * SPACING + 40) * zoom, 102 * zoom);
         ctx.setLineDash([]);
       }
       ctx.fillStyle = '#cdd6f4'; ctx.font = Math.max(9, 11 * zoom) + 'px monospace';
       ctx.fillText(sp.count + '×' + (t === 'gunner' ? '🔫' : t[0].toUpperCase()),
-        px - 18 * zoom, py - 60 * zoom);
+        px - 18 * zoom, py - 104 * zoom);
       if (sp.trigger != null) {
         ctx.fillStyle = '#ff8f5a';
         ctx.fillText('⚑' + sp.trigger, sx(sp.trigger) - 8, sy(GROUND) + 16);
@@ -505,11 +511,11 @@
         ctx.setLineDash([]);
       }
     });
-    // p1
-    stickman(sx(doc.p1x), sy(GROUND), '#f2f2f2', zoom * 0.8);
+    // p1 — same true scale as the spawn figures (it IS the player body).
+    stickman(sx(doc.p1x), sy(GROUND), '#f2f2f2', zoom * (92 / 52));
     if (sel && sel.kind === 'p1') {
       ctx.strokeStyle = '#ffe066'; ctx.setLineDash([4, 4]);
-      ctx.strokeRect(sx(doc.p1x) - 14 * zoom, sy(GROUND) - 58 * zoom, 28 * zoom, 62 * zoom);
+      ctx.strokeRect(sx(doc.p1x) - 20 * zoom, sy(GROUND) - 92 * zoom, 40 * zoom, 92 * zoom);
       ctx.setLineDash([]);
     }
     // ghost pillar while dragging
