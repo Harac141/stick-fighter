@@ -71,12 +71,14 @@ const CFG = {
   },
   // Attacks: startup, active, recovery in frames; knockback vx/vy.
   attacks: {
-    // ---- Jab = a 3-hit CHAIN, not a button (user: jab was spammable). ----
+    // ---- Jab = a 2-hit CHAIN that CANCELS into heavies (user: J-J-K). ----
     // Tapping J throws single light jabs: chip damage, LONG lone cooldown
     // (that's the "have to commit" tax). Pressing again inside the chain
-    // window links jab1 -> jab2 -> finisher; the finisher is the commitment
-    // payoff (real knockback, big stun, long whiff recovery). Chain state
-    // lives on the Fighter (chainStep/chainT), advanced in startAttack.
+    // window links jab1 -> jab2 (the tight pop-pop). The string has no third
+    // link: instead, K (or W+K / S+K...) CANCELS out of jab2 into any heavy —
+    // the finisher is the player's choice, and the whole heavy catalog
+    // (heavy / cartwheel / hammerfist) becomes the combo's variety. Chain
+    // state lives on the Fighter (chainStep/chainT), advanced in startAttack.
     jab: {                                      // AI free-poke (MookAI pulses
       startup: 2, active: 3, recovery: 5,       // inp.jab) — kept at the old
       damage: 6, pose: 'jab',                   // numbers: mob balance is
@@ -97,21 +99,13 @@ const CFG = {
     jab2: {
       chain: true,
       startup: 3, active: 3, recovery: 8,
-      linkFrom: 10,                             // the finisher holds back: pop 2
-                                                // lands, breath, then POP —   (user rhythm)
-                                                // mash cannot compress this leg
+      cancelFrom: 5,                            // J-J-K (user): from mid-active
+                                                // (and through the tax window)
+                                                // HEAVY cancels out of pop 2
       damage: 3, pose: 'jab', lunge: 300,
       box:   { x: 32, y: -12, w: 48, h: 24 },  // other hand, slightly wider
       knock: { x: 45, y: -25, hitstun: 10 },   // still a chip; target stays put
       cooldown: 22,
-    },
-    finisher: {                                 // chain step 3: the payoff
-      chain: true,
-      startup: 6, active: 4, recovery: 14,      // wind-up reads as commitment
-      damage: 11, pose: 'finisher',
-      box:   { x: 30, y: -6, w: 56, h: 32 },
-      knock: { x: 520, y: -300, hitstun: 24 },  // real pop — combos end here
-      cooldown: 38,                             // the string's cooldown
     },
     heavy: {
       startup: 9, active: 5, recovery: 20,
@@ -320,10 +314,13 @@ class Fighter {
       // gap vs 167ms for the finisher. The string's own clock (chainWindow)
       // is the only gate once you've committed; startAttack overwrites the
       // cooldown anyway. The tax still gates the NEXT string (selectAttack).
+      // CAPPED AT TWO (user: J-J-K): only step 1 auto-links to jab2; a press
+      // on the second pop is dropped (the finisher is a HEAVY, chosen by the
+      // player via the cancel window below — never an auto third hit).
       if (this.chainQueued && !this.currentAttack
-          && !this.ai && !this.airborne && this.chainStep >= 1 && this.chainStep <= 2
+          && !this.ai && !this.airborne && this.chainStep === 1
           && this.chainT <= this.chainWindow) {
-        this.startAttack(this.chainStep === 1 ? 'jab2' : 'finisher');
+        this.startAttack('jab2');
         return;
       }
     } else if (this.chainQueued) {
@@ -399,23 +396,31 @@ class Fighter {
 
     // Attack state dominates movement.
     if (this.state === 'attack') {
-      // CHAIN CANCEL: the recovery of a chain link cancels into the NEXT
-      // link when jab is pressed again (buffered early presses too). This
-      // is what links the 3-hit string instead of three separate taps.
-      // Players only: AI pulses inp.jab for its free pokes and must never
-      // fall into the chain (mob balance stays on the old 'jab' numbers).
       const cur = this.currentAttack && CFG.attacks[this.currentAttack];
+      // HEAVY CANCEL (user: J-J-K): from mid-active of pop 2, any heavy —
+      // K plain, or W+K / S+K variants — interrupts the string. The finisher
+      // is the PLAYER's choice: heavy / cartwheel / hammerfist all become the
+      // combo's payoff, and momentum (lunge) carries into the cancel.
+      if (cur && cur.cancelFrom != null && !this.ai && !this.airborne
+          && this.attackFrame >= cur.cancelFrom && input.heavy) {
+        const mv = this.selectAttack(input);
+        if (mv && mv !== 'shoot') { this.startAttack(mv); return; }
+      }
+      // CHAIN CANCEL (jab1 only): the recovery of pop 1 cancels into pop 2
+      // when J is pressed again (buffered early presses too). CAPPED AT TWO
+      // (user): there is no third link — presses on pop 2 do nothing; K
+      // cancels out above. Players only: AI pulses inp.jab for its free
+      // pokes and must never fall into the chain (mob balance stays on the
+      // old 'jab' numbers).
       if (cur && cur.chain && !this.ai && !this.airborne && (jabPressed || this.chainQueued)
-          && this.chainStep >= 1 && this.chainStep <= 2) {
-        // RHYTHM (user: 'pop-pop, pop'): each link unlocks at cur.linkFrom.
-        // pop1 -> pop2 opens early (tight double), pop2 -> finisher opens
-        // LATE (frame 10) so mash can't compress it — the breath before the
-        // POP is enforced by the frame data, not the player's finger speed.
+          && this.chainStep === 1) {
+        // RHYTHM (user: tight pop-pop): pop 2 unlocks at jab1.linkFrom —
+        // early, so even a mash lands the double tight.
         const unlock = cur.linkFrom != null ? cur.linkFrom : (cur.startup + cur.active);
         if (this.attackFrame < unlock) {
           if (jabPressed) this.chainQueued = true;   // pressed too early: hold it
         } else if (this.chainT <= this.chainWindow) {
-          this.startAttack(this.chainStep === 1 ? 'jab2' : 'finisher');
+          this.startAttack('jab2');
           return;
         }
       }
@@ -435,10 +440,20 @@ class Fighter {
       if (mv && this.canStartAttack()) { this.startAttack(mv); return; }
     }
     // Chain press landing on the tax window (idle, cooldown ticking): buffer
-    // it so the string resumes the frame the cooldown lifts.
+    // it so the string resumes the frame the cooldown lifts. CAPPED: only the
+    // pop1 -> pop2 link buffers; presses after pop 2 open a fresh string.
     if (jabPressed && !this.currentAttack && !this.ai && this.attackCooldown > 0
-        && this.chainStep >= 1 && this.chainStep <= 2 && this.chainT <= this.chainWindow) {
+        && this.chainStep === 1 && this.chainT <= this.chainWindow) {
       this.chainQueued = true;
+    }
+    // HEAVY CANCEL, post-pop-2 (J-J-K at human speed): K landing while pop 2
+    // still sits inside its cancel window (even after the attack ended, in
+    // the tax) fires the chosen heavy NOW — the string never waits out the
+    // lone-tap cooldown.
+    if (!this.currentAttack && !this.ai && !this.airborne && input.heavy
+        && this.chainStep === 2 && this.chainT <= this.chainWindow) {
+      const mv = this.selectAttack(input);
+      if (mv && mv !== 'shoot') { this.startAttack(mv); return; }
     }
 
     // ---- Dash (ground only) ----
@@ -558,10 +573,11 @@ class Fighter {
     if (input.down) return H ? 'hammerfist' : 'sweep';   // (also works from run)
     if (H) return 'heavy';
     if (this.ai) return 'jab';              // mob free-poke: old numbers, no chain
-    // Player grounded plain jab: continue the 3-hit chain if one is live and
-    // in window, else open a fresh chain (jab1 = chip + lone-cooldown tax).
-    if (this.chainStep >= 1 && this.chainStep <= 2 && this.chainT <= this.chainWindow)
-      return this.chainStep === 1 ? 'jab2' : 'finisher';
+    // Player grounded plain jab: a live pop 1 in window links to pop 2, else
+    // open a FRESH string. CAPPED AT TWO (user): there is no third auto-hit —
+    // the finisher is a HEAVY the player chooses (cancel window on pop 2).
+    if (this.chainStep === 1 && this.chainT <= this.chainWindow)
+      return 'jab2';
     return 'jab1';
   }
 
@@ -571,7 +587,7 @@ class Fighter {
     // window clock; ANY non-chain attack (heavy, launcher, shot...) resets
     // the chain — committing elsewhere forfeits the string.
     if (atk.chain) {
-      this.chainStep = (name === 'jab1') ? 1 : (name === 'jab2') ? 2 : 3;
+      this.chainStep = (name === 'jab1') ? 1 : (name === 'jab2') ? 2 : 0;
       this.chainT = 0;
     } else {
       this.chainStep = 0;
