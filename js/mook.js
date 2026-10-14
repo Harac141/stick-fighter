@@ -108,9 +108,15 @@ class MookAI {
     const dist = Math.hypot(dx, dy);
     if (dist < 1) return true;
     const ux = dx / dist, uy = dy / dist;
-    const GRACE = 240;   // px of pillar overlap the bullet eats for free
+    // Muzzle grace (mirrors spawnBullet.gracePillar + stepBullets): the
+    // bullet survives ~240px of pillar overlap for free — but ONLY its own
+    // perch box, and only up to that distance; past it (or any OTHER pillar
+    // from 0) the box is hard cover. A sniper atop a tall column therefore
+    // cannot gun down someone standing at its base.
+    const perch = f.scene.pillarUnder(f);
+    const GRACE = 240;
     for (const p of lv.pillars) {
-      let t0 = 0, t1 = dist;
+      let t0 = (p === perch) ? Math.min(dist, GRACE) : 0, t1 = dist;
       if (Math.abs(ux) < 1e-6) {
         if (mx < p.x || mx > p.x + p.w) continue;          // outside x-span
       } else {

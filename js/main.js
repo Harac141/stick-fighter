@@ -183,12 +183,17 @@ class FightScene extends Phaser.Scene {
       // driving into it (only when NOT seated on top; standing bodies skip via
       // the bodyBottom<=top guard inside pillarSide). Runs even when grounded
       // so a body-blocked mook leaning into a column stays pinned, not sunk.
-      // RISING exemption is ONLY for AI vaulting (mook hop / sniper escape):
-      // a vaulting body needs its horizontal drive to survive the climb. The
-      // player is never exempt — pillar sides block a jumping player (user:
-      // "the sides don't block me when I'm jumping").
+      // RISING exemption is ONLY for AI vaulting (mook hop / sniper escape)
+      // AND ONLY while actually rising: the climb needs horizontal drive to
+      // survive (eject zeroes vx), but the DESCENT must stay solid or a fast
+      // mook sails straight through the column (user bug). Falling bodies
+      // that didn't clear the top get ejected off the face and land on the
+      // near side — a failed vault bounces off the wall, not through it.
+      // The player is never exempt (user: "the sides don't block me when I'm
+      // jumping").
       const vaulting = f.ai && f.ai.dec &&
-        (f.ai.dec.mode === 'hop' || f.ai.dec.mode === 'vault');
+        (f.ai.dec.mode === 'hop' || f.ai.dec.mode === 'vault')
+        && !f._grounded && b.enable && b.velocity.y < 0;
       const side = vaulting ? null : this.pillarSide(f.sprite.x, f.sprite.y + CFG.body.height / 2, half);
       if (side) {
         f.sprite.x += side.push;
@@ -555,14 +560,45 @@ class FightScene extends Phaser.Scene {
   // (swatBullets, called from resolveHits' pass) deflects it. Bullets hit
   // fighters through takeHit; a bullet that hits its OWN shooter's side bounces
   // (no self-damage comedy loops). ----
+  // The solid box a fighter is standing on (their perch), or null on flat
+  // ground. Bullets and LOS give THIS box only the muzzle grace.
+  pillarUnder(f) {
+    const lv = this.level;
+    if (!lv || !f) return null;
+    const feet = f.y + CFG.body.height / 2;
+    for (const p of lv.pillars) {
+      if (f.x >= p.x && f.x <= p.x + p.w && Math.abs(feet - p.top) < 6) return p;
+    }
+    return null;
+  }
+
   spawnBullet(o) {
     if (!this.bullets) this.bullets = [];
     this.bullets.push({
       x: o.x, y: o.y, vx: o.vx, vy: o.vy || 0,
       damage: o.damage, knock: o.knock, owner: o.owner,
+      gracePillar: this.pillarUnder(o.owner),   // muzzle grace: own perch only
       life: 110,          // frames (~1.8s) — despawn so off-screen shots die
       swatted: 0,         // deflection counter (render + eventual katana flair)
     });
+  }
+
+  // Segment (x0,y0)->(x1,y1) vs AABB: true = segment crosses the box. The
+  // bullet steps ~19px per frame; point-only sampling lets a steep shot graze
+  // a pillar CORNER and straddle it between samples (user bug). Liang-Barsky.
+  segBox(x0, y0, x1, y1, bx0, bx1, by0, by1) {
+    let t0 = 0, t1 = 1;
+    const dx = x1 - x0, dy = y1 - y0;
+    const slabs = [[-dx, x0 - bx0], [dx, bx1 - x0], [-dy, y0 - by0], [dy, by1 - y0]];
+    for (const [p, q] of slabs) {
+      if (Math.abs(p) < 1e-9) { if (q < 0) return false; }
+      else {
+        const r = q / p;
+        if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+        else { if (r < t0) return false; if (r < t1) t1 = r; }
+      }
+    }
+    return t0 <= t1;
   }
 
   stepBullets() {
@@ -570,6 +606,7 @@ class FightScene extends Phaser.Scene {
     if (!bs || !bs.length) return;
     for (const bl of bs) {
       if (bl.dead) continue;
+      const px0 = bl.x, py0 = bl.y;
       bl.x += bl.vx * SIM_STEP;
       bl.y += (bl.vy || 0) * SIM_STEP;
       bl.life--;
@@ -578,14 +615,15 @@ class FightScene extends Phaser.Scene {
       if (bl.x < 4 || bl.x > this.levelWidth - 4 || bl.y > this.groundY + 30) {
         bl.dead = true; continue;   // y: die ON the floor, don't tunnel under it
       }
+      // Pillars: SWEPT (segment) so no corner straddling. The muzzle grace
+      // (first ~12 frames) exempts ONLY the shooter's own perch pillar — the
+      // sniper needs to clear the box he stands on — every OTHER pillar is
+      // solid from frame 0 (user bug: bullets cut corners through any pillar
+      // near the muzzle while the grace blindly covered all of them).
       const lv = this.level;
-      // Grace: first ~12 frames skip pillar collision so a sniper standing on
-      // a wide crate can shoot DOWN at someone beside it without his own
-      // perch eating the bullet (1150px/s clears ~230px in 12 frames — enough
-      // to exit the box he's standing on). Horizontal shots are unaffected:
-      // they spawn above/outside neighbouring boxes and collide after grace.
-      if (lv && bl.life <= 98) for (const p of lv.pillars) {
-        if (bl.x >= p.x && bl.x <= p.x + p.w && bl.y >= p.top && bl.y <= this.groundY) {
+      if (lv) for (const p of lv.pillars) {
+        if (bl.gracePillar === p && bl.life > 98) continue;
+        if (this.segBox(px0, py0, bl.x, bl.y, p.x, p.x + p.w, p.top, this.groundY)) {
           bl.dead = true;   // sparks: keep for a beat as a impact stub
           break;
         }
