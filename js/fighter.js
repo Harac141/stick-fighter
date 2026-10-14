@@ -1076,6 +1076,37 @@ class Fighter {
   }
 
   // ---- Rendering ----------------------------------------------------------
+  // Katana wrist angle: the blade is its OWN rigid object gripped at the
+  // hand, NOT a forearm extension (user: "it's just his arm, but longer —
+  // it should have a joint"). Facing-space radians (0 = forward, + = down);
+  // render() lag-blends this._bladeAng toward the target so the tip TRAILS
+  // the swing and whips through — the forearm-to-blade kink IS the wrist.
+  // During the CUTS the target is the LIVE forearm direction (a scripted
+  // absolute sweep fought the IK arm and folded the blade back under the
+  // armpit — kink >2.5rad measured); the lag against a fast-moving forearm
+  // is what produces the whip. Posture targets only apply off-swing.
+  bladeAngleTarget(foreAng) {
+    const atk = this.currentAttack && CFG.attacks[this.currentAttack];
+    const slashL = this.state === 'attack' && atk && atk.pose === 'slashL';
+    const slashH = this.state === 'attack' && atk && atk.pose === 'slashH';
+    if (slashL || slashH) {
+      const fr = this.attackFrame;
+      const active = fr > atk.startup && fr <= atk.startup + atk.active;
+      if (!active) {
+        // wind-up: sheath (light draws from low-back) / raise (heavy back-overhead)
+        return slashL ? 2.8 : -2.3;
+      }
+      // cut: blade tracks the forearm with a small laid-back offset (the
+      // wrist stays bent INTO the swing edge, like a real draw-cut).
+      return foreAng + (slashL ? 0.12 : 0.25);
+    }
+    if (this.state === 'hurt') return 1.5;                     // hangs from the wrist
+    if (this.state === 'dash') return -2.8;                    // trails flat behind
+    if (this.airborne) return -2.1;                            // carried back-up in flight
+    if (this.state === 'run') return -2.4;                     // carried back-up at sprint
+    return -0.12;                                              // ready guard: flat, muzzle-up
+  }
+
   // Poses are NOT pre-rendered frames: computePose runs live every frame and
   // the result is BLENDED into the previous render pose (joint-target lerp +
   // IK re-solve), so state changes flow into each other instead of popping.
@@ -1120,29 +1151,50 @@ class Fighter {
       }
     }
 
-    // KATANA: the blade rides the front arm (elbow->hand direction), so the
-    // slash POSE steers it — no separate angle state, and it inherits every
-    // IK/blending property of the arm. A faint guard shimmer shows the bullet
-    // block window (guardBoxes active through wind-up+active).
+    // KATANA: rigid grip+blade object rotating around the wrist joint
+    // (bladeAngleTarget), lag-blended so the tip trails the arm — the kink
+    // between forearm and blade reads as the joint the straight version
+    // lacked. A faint guard shimmer marks the bullet-block window.
     if (this.weapon === 'katana') {
+      // facing-space forearm angle of the blade hand (handB == front hand).
+      const foreA = Math.atan2(pose.handB.y - pose.elbowB.y,
+        (pose.handB.x - pose.elbowB.x) * f);
+      const tgt = this.bladeAngleTarget(foreA);
+      if (typeof this._bladeAng !== 'number') this._bladeAng = tgt;
+      // Adaptive wrist: faster follow DURING active swings (the cut must stay
+      // pointed with its hand — a loose wrist folded the blade ~143deg back
+      // mid-snap), slower settle elsewhere so posture changes get a soft
+      // whip tail (tip trails when starting/stopping).
+      const atkW = this.currentAttack && CFG.attacks[this.currentAttack];
+      const activeNow = this.state === 'attack' && atkW
+        && this.attackFrame > atkW.startup && this.attackFrame <= atkW.startup + atkW.active;
+      const W = activeNow ? 0.72 : 0.38;
+      let dd = tgt - this._bladeAng;
+      while (dd > Math.PI) dd -= 2 * Math.PI;
+      while (dd < -Math.PI) dd += 2 * Math.PI;
+      this._bladeAng += dd * W;
       const hxx = pose.handB.x, hyy = pose.handB.y;
-      let dx = hxx - pose.elbowB.x, dy = hyy - pose.elbowB.y;
-      const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
+      const bdx = Math.cos(this._bladeAng) * f, bdy = Math.sin(this._bladeAng);
       const BLADE = 46;
-      const tipx = hxx + dx * BLADE, tipy = hyy + dy * BLADE;
+      const tipx = hxx + bdx * BLADE, tipy = hyy + bdy * BLADE;
       // guard shimmer (block window): a soft swept band along the blade.
       if (this.guardBoxes.length) {
         g.lineStyle(9, 0x9fd0ff, 0.18);
-        g.lineBetween(hxx - dx * 6, hyy - dy * 6, tipx, tipy);
+        g.lineBetween(hxx - bdx * 7, hyy - bdy * 7, tipx, tipy);
       }
-      // blade (steel, tapered feel via a thin bright edge).
+      // grip + pommel: collinear with the blade (one rigid object), wood.
+      g.lineStyle(4, 0x7a5a2e, 1);
+      g.lineBetween(hxx - bdx * 9, hyy - bdy * 9, hxx, hyy);
+      // blade (steel) + glint edge.
       g.lineStyle(3.5, 0xdfe6f2, 1);
       g.lineBetween(hxx, hyy, tipx, tipy);
       g.lineStyle(1.5, 0xffffff, 0.9);
-      g.lineBetween(hxx + dx * 6, hyy + dy * 6 - 1, tipx, tipy);   // glint
-      // crossguard perpendicular at the grip.
+      g.lineBetween(hxx + bdx * 8, hyy + bdy * 8, tipx, tipy);
+      // crossguard perpendicular at the grip + wrist joint dot.
       g.lineStyle(3, 0xb8863b, 1);
-      g.lineBetween(hxx - dy * 5, hyy + dx * 5, hxx + dy * 5, hyy - dx * 5);
+      g.lineBetween(hxx - bdy * 5, hyy + bdx * 5, hxx + bdy * 5, hyy - bdx * 5);
+      g.fillStyle(0xe8eef7, 1);
+      g.fillCircle(hxx, hyy, 2.6);
     }
 
     // Debug boxes: hurtbox (cyan) + active hitbox (red).
