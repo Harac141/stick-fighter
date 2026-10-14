@@ -1093,22 +1093,29 @@ class Fighter {
       if (fr <= su) {
         // wind-up from the guard the fighter already HOLDS (a sheath start
         // teleported the blade 2.6rad on frame 1 — the light is a snap-cut,
-        // not an iai draw).
+        // not an iai draw). Heavy raises just past vertical-back: enough
+        // coil to read committed, not a windmill (user: 'a bit flaily' —
+        // the old -2.3 start + 3.6rad active sweep was 3x the light's arc).
         const k = ease(Math.min(1, fr / su));
         return light ? -0.12 + (1.15 + 0.12) * k          // drop hand+blade back-low (coil)
-                     : -0.12 + (-2.3 + 0.12) * k;         // guard -> raised back
+                     : -0.12 + (-1.7 + 0.12) * k;         // guard -> overhead, controlled
       }
       if (fr <= su + ac) {
-        // the cut itself: scripted sweep (this is THE animation).
+        // the cut itself: scripted sweep (this is THE animation). Heavy is a
+        // CHOP: ~135deg ending low-forward — the sweep covers less arc than
+        // the wind-up raised, so the edge drives DOWN and stops.
         const k = ease((fr - su) / Math.max(1, ac));
         return light ? 1.15 + (-0.15 - 1.15) * k          // hip -> flat forward
-                     : -2.3 + (1.3 + 2.3) * k;            // overhead-back -> low forward
+                     : -1.7 + (0.7 + 1.7) * k;            // overhead -> low forward
       }
-      // recovery: animate back to the guard rest — the old static postures
-      // teleported the blade here mid-retract (the 'weird' the user saw).
-      const k = ease(Math.min(1, (fr - su - ac) / Math.max(1, rec * 0.7)));
-      const from = light ? -0.15 : 1.3;
-      return from + (-0.12 - from) * k;
+      // recovery: heavy HOLDS the low follow-through (a chop stays down —
+      // drifting back up through horizontal looked like waving the sword),
+      // then settles to guard in the last stretch. Light returns promptly.
+      const k = Math.min(1, (fr - su - ac) / Math.max(1, rec * (light ? 0.7 : 0.9)));
+      const hold = light ? 0 : 0.45;                      // hold fraction of recovery
+      const k2 = light ? k : Math.max(0, (k - hold) / (1 - hold));
+      const from = light ? -0.15 : 0.7;
+      return from + (-0.12 - from) * ease(k2);
     }
     if (this.state === 'hurt') return 1.5;                // hangs from the wrist
     if (this.state === 'dash' && this.dashTimer > 0) return -2.6;  // leap: trails flat
@@ -1579,19 +1586,34 @@ class Fighter {
         } else {
           handF = P(f * 18, feetY - 60); handB = P(-f * 6, feetY - 64);   // recover to guard
         }
-      } else if (atk.pose === 'slashH') {       // katana heavy: overhead-to-low cleave
-        if (fr <= atk.startup) {                        // wind up: blade high behind
-          uArmF += 8; fArmF += 8;
-          handF = P(-f * 20, feetY - 100); handB = P(-f * 6, feetY - 70);
-        } else if (act) {                               // sweep down-forward
-          const ka = (fr - atk.startup) / Math.max(1, atk.active);
-          uArmF += 8; fArmF += 8;
-          const ang = -1.25 + 1.9 * ka;                 // overhead-back to low-forward
-          const rad = atk.box.x + atk.box.w - 22;
-          handF = P(f * rad * Math.cos(ang + 0.35), feetY - 66 - rad * Math.sin(ang) * 0.6);
-          handB = P(f * rad * 0.5 * Math.cos(ang + 0.35) - f * 6, feetY - 66 - rad * 0.5 * Math.sin(ang) * 0.6);
-        } else {
-          handF = P(f * 30, feetY - 44); handB = P(f * 10, feetY - 56);   // settle low
+      } else if (atk.pose === 'slashH') {       // katana heavy: committed cleave
+        // Keypoint interpolation (like the hammer pose), NOT trig — a sin()
+        // sign inversion had the "overhead" wind-up keeping the hand LOW (the
+        // flail the user saw: no raise, then a big radius circle to recover).
+        // Front hand: guard -> overhead-back -> low-forward follow-through.
+        const ease = (t) => t * t * (3 - 2 * t);
+        const P2 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        // (fx, height above feet); f-multiplied on x at use.
+        const GUARD = [22, 60], OVER = [-6, 98], LOW = [42, 28];
+        if (fr <= atk.startup) {                        // wind up: guard -> overhead
+          const k = ease(Math.min(1, fr / atk.startup));
+          const [hx, hy] = P2(GUARD, OVER, k);
+          uArmF += 4 + 6 * k; fArmF += 4 + 6 * k;
+          handF = P(f * hx, feetY - hy); handB = P(-f * 8, feetY - 66);
+        } else if (fr <= atk.startup + atk.active) {    // the CHOP: overhead -> low fwd
+          // easeOut (not smoothstep): accelerate OFF the hold immediately and
+          // DECELERATE into the follow-through — a smoothstep whip-then-stop
+          // reads as flail on a big committed arc.
+          const raw = (fr - atk.startup) / Math.max(1, atk.active);
+          const ka = 1 - (1 - raw) * (1 - raw);
+          const [hx, hy] = P2(OVER, LOW, ka);
+          uArmF += 10; fArmF += 10;
+          handF = P(f * hx, feetY - hy); handB = P(f * 4 * ka - f * 4, feetY - 62);
+        } else {                                        // hold low, then settle to guard
+          const k = ease(Math.min(1, (fr - atk.startup - atk.active) / Math.max(1, atk.recovery * 0.9)));
+          const hold = 0.5, k2 = Math.max(0, (k - hold) / (1 - hold));
+          const [hx, hy] = P2(LOW, GUARD, k2);
+          handF = P(f * hx, feetY - hy); handB = P(f * (4 - 10 * k2), feetY - (62 - 4 * k2));
         }
       } else if (atk.pose === 'shoot') {          // two-handed aim, gun at eye line
         const aim = fr <= atk.startup ? Math.min(1, fr / Math.max(1, atk.startup)) : (act ? 1 : 0.75);
