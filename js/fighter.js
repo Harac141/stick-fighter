@@ -86,7 +86,9 @@ const CFG = {
     },
     jab1: {
       chain: true,
-      startup: 2, active: 3, recovery: 5,      // snappy — chain feel matters
+      startup: 2, active: 3, recovery: 5,
+      linkFrom: 4,                              // pop 2 unlocks EARLY (frame 4):
+                                                // mash = tight pop-pop        (user rhythm)
       damage: 3, pose: 'jab', lunge: 300,
       box:   { x: 34, y: -14, w: 46, h: 22 },
       knock: { x: 40, y: -20, hitstun: 9 },    // chip: freeze in place, keep the target in box range
@@ -94,7 +96,10 @@ const CFG = {
     },
     jab2: {
       chain: true,
-      startup: 3, active: 3, recovery: 6,
+      startup: 3, active: 3, recovery: 8,
+      linkFrom: 10,                             // the finisher holds back: pop 2
+                                                // lands, breath, then POP —   (user rhythm)
+                                                // mash cannot compress this leg
       damage: 3, pose: 'jab', lunge: 300,
       box:   { x: 32, y: -12, w: 48, h: 24 },  // other hand, slightly wider
       knock: { x: 45, y: -25, hitstun: 10 },   // still a chip; target stays put
@@ -398,7 +403,12 @@ class Fighter {
       const cur = this.currentAttack && CFG.attacks[this.currentAttack];
       if (cur && cur.chain && !this.ai && !this.airborne && (jabPressed || this.chainQueued)
           && this.chainStep >= 1 && this.chainStep <= 2) {
-        if (this.attackFrame <= cur.startup + cur.active) {
+        // RHYTHM (user: 'pop-pop, pop'): each link unlocks at cur.linkFrom.
+        // pop1 -> pop2 opens early (tight double), pop2 -> finisher opens
+        // LATE (frame 10) so mash can't compress it — the breath before the
+        // POP is enforced by the frame data, not the player's finger speed.
+        const unlock = cur.linkFrom != null ? cur.linkFrom : (cur.startup + cur.active);
+        if (this.attackFrame < unlock) {
           if (jabPressed) this.chainQueued = true;   // pressed too early: hold it
         } else if (this.chainT <= this.chainWindow) {
           this.startAttack(this.chainStep === 1 ? 'jab2' : 'finisher');

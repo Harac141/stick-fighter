@@ -194,10 +194,18 @@ class FightScene extends Phaser.Scene {
       const vaulting = f.ai && f.ai.dec &&
         (f.ai.dec.mode === 'hop' || f.ai.dec.mode === 'vault')
         && !f._grounded && b.enable && b.velocity.y < 0;
-      const side = vaulting ? null : this.pillarSide(f.sprite.x, f.sprite.y + CFG.body.height / 2, half);
+      const side = this.pillarSide(f.sprite.x, f.sprite.y + CFG.body.height / 2, half);
       if (side) {
+        // The position clamp ALWAYS runs: no body ever ends up inside a
+        // column below its top — rising included (user bug round 2: the old
+        // full exemption let a dashing jumper sail clean through a thin
+        // pillar while still below the top line). Vaulting only spares the
+        // VELOCITY: drive survives, x clamps to the face, so the mook slides
+        // UP the wall face and tops out (drive zeroed every tick could never
+        // reach the top). Everyone else hits the wall dead.
         f.sprite.x += side.push;
-        if (b.enable && side.wallDir && b.velocity.x * side.wallDir > 0) b.setVelocityX(0);
+        if (!vaulting && b.enable && side.wallDir
+            && b.velocity.x * side.wallDir > 0) b.setVelocityX(0);
         b.updateFromGameObject();
       }
 
