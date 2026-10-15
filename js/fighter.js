@@ -692,8 +692,11 @@ class Fighter {
     // window, so a katana blocks bullets on reaction (frames 0..active), not
     // only on the 3 damaging active frames. Separate array: no damage.
     this.guardBoxes.length = 0;
-    if (atk.guard && this.attackFrame >= 1 && this.attackFrame <= activeEnd)
-      this.guardBoxes.push(this.attackWorldBox(atk, atk.guard));
+    if (atk.guard && this.attackFrame >= 1 && this.attackFrame <= activeEnd) {
+      const gb = this.attackWorldBox(atk, atk.guard);
+      gb.attacker = this;              // swat attribution: your blade bats YOUR blocks
+      this.guardBoxes.push(gb);
+    }
     // Gun: the aim COMMITS at atk.aimLock (a few frames before the fire
     // frame) and never tracks again — moving off the line genuinely dodges.
     // The committed vector lives on the fighter so renderSights can draw the
@@ -741,6 +744,12 @@ class Fighter {
     } else if (this.attackFrame > activeStart && this.attackFrame <= activeEnd && !this.hitConfirmed) {
       this.hitboxes.push(this.attackWorldBox(atk));
     }
+    // STYLE CREDIT plumbing: tag every published hitbox with its attacker so
+    // takeHit can attribute kills (overkill pays ONLY player-landed hits —
+    // user anti-camp rule), and apply the IMBUE damage multiplier (v1
+    // power; scene.style owns the timer/level).
+    const mul = (this.imbueMult > 1 && this === this.scene.p1) ? this.imbueMult : 1;
+    for (const hb of this.hitboxes) { hb.attacker = this; if (mul > 1) hb.damage *= mul; }
     if (this.attackFrame >= activeStart + atk.active + atk.recovery) {
       this.currentAttack = null;
       this.hitboxes.length = 0;
@@ -1058,6 +1067,7 @@ class Fighter {
     this._snapNext = true;  // hurt recoil must read instantly
     // Interrupt a dash BEFORE knockback is applied (endDash clamps speed).
     if (this.state === 'dash') this.endDash();
+    const hpBefore = this.health;
     this.health = Math.max(0, this.health - hb.damage);
     this.hitstun = hb.knock.hitstun;
     this.facing = -fromFacing; // face the attacker
@@ -1072,7 +1082,16 @@ class Fighter {
     // Meteor spike: slam down, then a bounce + scramble delay on landing.
     if (hb.meteor) this.meteorPending = true;
     // KO AFTER knockback lands — the ragdoll inherits the corpse's velocity.
-    if (this.health === 0 && !this.dead) this.ko(hb);   // mooks KO; players too (duel KO later)
+    if (this.health === 0 && !this.dead) {
+      // STYLE CREDIT (roguelike v1): the kill pays OVERKILL — damage beyond
+      // the HP that was left. Attribution travels on the hitbox
+      // (hb.attacker = the fighter that landed it); pit/crush deaths set no
+      // attacker and therefore pay nothing (anti-camp: NPC/environment
+      // kills are free of style value by construction).
+      if (hb.attacker && this.scene.style)
+        this.scene.style.creditKill(this, hb.damage - hpBefore, hb.attacker);
+      this.ko(hb);
+    }
   }
 
   // ---- Rendering ----------------------------------------------------------

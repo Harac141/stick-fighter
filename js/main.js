@@ -464,6 +464,49 @@ class FightScene extends Phaser.Scene {
     this.hud = this.add.graphics();
     this.hud.setScrollFactor(0);
 
+    // ---- STYLE (roguelike v1): ?style=1 arms the power system. ----
+    if (new URLSearchParams(location.search).get('style') === '1') {
+      this.style = new window.StyleManager(this);
+      this.wave = 1;                     // scene object survives scene.restart(): reset escalation
+      this.bullets = [];
+      this.styleText = this.add.text(44, 108, '', { fontFamily: 'monospace', fontSize: '13px', color: '#9fe8c8' });
+      this.styleText.setScrollFactor(0);
+      this.styleBig = this.add.text(640, 300, '', { fontFamily: 'monospace', fontSize: '26px', color: '#ffffff', align: 'center' });
+      this.styleBig.setOrigin(0.5).setScrollFactor(0).setVisible(false);
+      const kbS = this.input.keyboard;
+      const kQ = kbS.addKey('Q'), kE = kbS.addKey('E'), kR = kbS.addKey('R');
+      const k1 = kbS.addKey('ONE'), k2 = kbS.addKey('TWO'), k3 = kbS.addKey('THREE');
+      const kEnter = kbS.addKey('ENTER');
+      // Guard: scene.restart() does NOT destroy the keyboard manager (the
+      // empty shutdown handler keeps every Phaser object alive), so without
+      // this each retry would stack a second copy of every listener.
+      if (!this._styleKeysWired) {
+        this._styleKeysWired = true;
+        kQ.on('down', () => { if (this.style) this.style.slowHeld = true; });
+        kQ.on('up',   () => { if (this.style) this.style.slowHeld = false; });
+        kE.on('down', () => { if (this.style) this.style.pressImbue(); });
+        kR.on('down', () => { if (this.style) this.style.pressDrain(); });
+        const pick = (i) => () => {
+          const st = this.style; if (!st) return;
+          if (st.pending === 'offer') {
+            st.pickOffer(i);
+            // Arena roguelike: after the pick, the NEXT wave walks in. Level
+            // mode keeps its own trigger-zone pacing (no forced respawn).
+            if (!st.pending && !this.level && this.mookCount > 0) this.nextWave();
+          }
+        };
+        k1.on('down', pick(0)); k2.on('down', pick(1)); k3.on('down', pick(2));
+        kEnter.on('down', () => {
+          const st = this.style; if (!st) return;
+          if (st.pending === 'offer') {
+            st.pickOffer(-1);                                      // Enter = skip
+            if (!st.pending && !this.level && this.mookCount > 0) this.nextWave();
+          }
+          else if (st.pending === 'dead') this.scene.restart();    // Enter = retry run
+        });
+      }
+    }
+
     this.acc = 0;
     this.game.events.once('shutdown', () => {});
   }
@@ -504,6 +547,49 @@ class FightScene extends Phaser.Scene {
     this.renderAll();
   }
 
+  // ---- STYLE (roguelike v1, ?style=1) --------------------------------------
+  // simGate: 1 = full sim; 0 = ONLY the player simulates (offer/death
+  // overlay); f = BULLET TIME — non-player bodies are frozen by the arcade
+  // (moves=false kills integration AND gravity — probe-verified on this
+  // Phaser build) and re-integrated by hand at f-rate, while their AI,
+  // frame counters, hitboxes and guard boxes hold. (world.timeScale is
+  // GLOBAL and inverted here — set 0.25 measured 4x fast — so it can't
+  // slow "everyone except you"; hand-driven gate instead.)
+  stepFighter(f, inp, gate) {
+    if (f.dead) { if (f.ragdoll && !f.gone) f.ragStep(gate === 1 ? SIM_STEP : gate * SIM_STEP); return; }
+    const b = f.body;
+    // gate === 0 hangs EVERYONE including the player (wave offer): arcade
+    // integration is global, so leaving the player live while resolveGround
+    // is gated would let gravity sink them through the floor under the text.
+    if (gate === 0) {
+      b.moves = false;
+      f.hitboxes.length = 0; f.guardBoxes.length = 0;
+      if (f.ai) f.aiIn = {};
+      return;
+    }
+    if (gate === 1 || f.inputKey) {         // the player simulates at full speed
+      b.moves = true;
+      if (f.ai) f.ai.think(this.fighters);
+      f.update(f.inputKey ? inp : (f.aiIn || {}));
+      return;
+    }
+    // frozen mook: no brain, no clocks, no hitboxes, arcade sits out.
+    if (f.ai) f.aiIn = {};
+    f.hitboxes.length = 0; f.guardBoxes.length = 0;
+    if (gate <= 0) { b.moves = false; return; }             // hang (offer/death)
+    b.moves = false;                                        // manual integrate @ f
+    b.velocity.y += CFG.gravity * SIM_STEP * gate;
+    f.sprite.x += b.velocity.x * SIM_STEP * gate;
+    f.sprite.y += b.velocity.y * SIM_STEP * gate;
+    // Grounded clamp (manual pass only): arcade's per-step ground snap is
+    // gated too, so WITHOUT this a footed mook sinks through the floor under
+    // bullet time (gravity integrates at f-rate with no resolveGround).
+    const feet = f.sprite.y + CFG.body.height / 2;
+    const top = this.surfaceUnder(f.sprite.x, this.groundY);
+    const surfTop = (top === null) ? this.groundY : top;
+    if (feet >= surfTop) { f.sprite.y = surfTop - CFG.body.height / 2; b.velocity.y = 0; }
+  }
+
   // ---- Mooks ----
   // A mook IS a player fighter with a MookAI attached: same class, same
   // moveset, same physics. Difficulty = knobs. Spawns on the right half.
@@ -521,6 +607,30 @@ class FightScene extends Phaser.Scene {
       new MookAI(m, { mgr: this.eng });
       this.fighters.push(m);
     }
+    if (this.style) this.style.offered = false;   // next wave clear re-offers
+  }
+
+  // Roguelike pacing (arena mode): each cleared wave walks in harder.
+  // Escalation is knob-only (hp +3, aggression +0.05, capped) — same class,
+  // same AI, no special cases. Style cap stays per-hit so big-HP waves pay
+  // per OVERKILL, not per HP pool.
+  nextWave() {
+    this.wave = (this.wave || 1) + 1;
+    const n = Math.min(8, this.mookCount);
+    for (let i = 0; i < n; i++) {
+      const side = (i % 2 === 0) ? 1 : -1;   // pressure from both sides
+      const x = Math.max(60, Math.min(this.levelWidth - 60,
+        this.p1.sprite.x + side * (380 + i * 55 + Math.random() * 40)));
+      const m = new Fighter(this, x, this.groundY, x > this.p1.sprite.x ? -1 : 1, 0xff8f5a);
+      new MookAI(m, {
+        mgr: this.eng,
+        hp: 12 + (this.wave - 1) * 3,
+        aggression: Math.min(0.9, 0.55 + (this.wave - 1) * 0.05),
+      });
+      this.fighters.push(m);
+    }
+    this.mookCount = this.fighters.filter((f) => f.ai && !f.dead).length;  // HUD counter = live total (not corpses)
+    if (this.style) this.style.offered = false;
   }
 
   // Level spawn zone: `count` mooks clustered around zone.x on the floor
@@ -558,6 +668,7 @@ class FightScene extends Phaser.Scene {
       m.lastSafeX = x;
       this.fighters.push(m);
     }
+    if (this.style) this.style.offered = false;   // next wave clear re-offers
   }
 
   // Trigger zones fire when P1 walks past their trigger x (progress gates:
@@ -616,15 +727,18 @@ class FightScene extends Phaser.Scene {
     return t0 <= t1;
   }
 
-  stepBullets() {
+  stepBullets(gate = 1) {
+    // gate scales time for projectiles (bullet time: they crawl, they don't
+    // hang — the user's slow-mo slows EVERYONE except you, bullets included;
+    // life is scaled too so a bullet's real flight time survives the slow-mo).
     const bs = this.bullets;
     if (!bs || !bs.length) return;
     for (const bl of bs) {
       if (bl.dead) continue;
       const px0 = bl.x, py0 = bl.y;
-      bl.x += bl.vx * SIM_STEP;
-      bl.y += (bl.vy || 0) * SIM_STEP;
-      bl.life--;
+      bl.x += bl.vx * SIM_STEP * gate;
+      bl.y += (bl.vy || 0) * SIM_STEP * gate;
+      bl.life -= gate;
       if (bl.life <= 0) { bl.dead = true; continue; }
       // Walls: bullets die on the world edges (pillars block them too).
       if (bl.x < 4 || bl.x > this.levelWidth - 4 || bl.y > this.groundY + 30) {
@@ -671,6 +785,7 @@ class FightScene extends Phaser.Scene {
       if (bl.dead) continue;
       for (const hb of hitboxes) {
         if (bl.x >= hb.x && bl.x <= hb.x + hb.w && bl.y >= hb.y && bl.y <= hb.y + hb.h) {
+          if (bl.swatted === 0 && this.style) this.style.onSwat(hb.attacker);  // bat a bullet = energy
           bl.swatted++;
           bl.vx = -bl.vx * 0.65;                 // batted back, slower
           bl.vy = -(bl.vy || 0) * 0.65 - 40;     // flipped upward off the line (aimed shots included)
@@ -758,19 +873,19 @@ class FightScene extends Phaser.Scene {
   }
 
   simStep() {
+    // STYLE gate (roguelike v1): full speed unless the style manager is
+    // holding the world (offer/death = 0) or bullet time is draining (f).
+    const st = this.style;
+    const gate = st ? (st.pending === 'offer' ? 0 : (st.slowActive ? st.slowFactor : 1)) : 1;
+    // 'dead' overlay deliberately runs at gate 1 (ragdoll plays out under the
+    // text); only the wave offer truly hangs the world.
     const i1 = this.sampleInput('p1');
     const i2 = this.sampleInput('p2');
     this.lastIn = { p1: i1, p2: i2 };   // press-intent for separateBodies
-    for (const f of this.fighters) {
-      if (f.dead) { if (f.ragdoll && !f.gone) f.ragStep(SIM_STEP); continue; }
-      if (f.ai) f.ai.think(this.fighters);   // AI writes f.aiIn for this step
-      // Player fighters read their sampled input; AI fighters (mooks) carry
-      // their own fabricated input dict on f.aiIn (same shape as keyboard).
-      const inp = f.inputKey ? this.lastIn[f.inputKey] : (f.aiIn || {});
-      f.update(inp);
-    }
-    if (this.eng) this.eng.tick();   // handoff cooldown pace
-    this.checkTriggers();            // progress-gated spawn zones (levels)
+    for (const f of this.fighters) this.stepFighter(f, f.inputKey === 'p2' ? i2 : i1, gate);
+    if (st) st.tick();
+    if (this.eng && gate === 1) this.eng.tick();   // handoff cooldown pace
+    if (gate === 1) this.checkTriggers();          // progress-gated spawn zones (levels)
     this.resolveHits();
     // Bullet pass (gunner mooks): any live attack hitbox may SWAT bullets
     // (the katana hook — a punch can bat one away today), then integrate.
@@ -786,9 +901,18 @@ class FightScene extends Phaser.Scene {
       }
       if (boxes.length) this.swatBullets(boxes);
     }
-    this.stepBullets();
+    this.stepBullets(gate);
     this.separateBodies();
-    this.resolveGround();            // floors/platforms/pits (levels; arena = groundY)
+    // resolveGround ALWAYS runs: during bullet time the player still moves
+    // at full speed and needs the floor/pillar snap; frozen mooks sit still
+    // (manual clamp above) and the sweep checks are no-ops for them.
+    this.resolveGround();                    // floors/platforms/pits (levels; arena = groundY)
+    // STYLE: wave clear = the between-waves power offer (also refills armor).
+    if (st && !st.pending && !st.offered && !this.p1.dead && this.mookCount > 0) {
+      const liveMooks = this.fighters.some((f) => f.ai && !f.dead);
+      const allSpawned = !this.spawnZones || this.spawnZones.every((z) => z.done);
+      if (!liveMooks && allSpawned) st.offerNow();
+    }
     // Reap despawned corpses. Cost note: settled ragdolls integrate NOTHING
     // (frozen still image) and the flailer cap bounds simultaneous live ones,
     // so thousands of accumulated corpses stay ~free until they fade.
@@ -837,6 +961,10 @@ class FightScene extends Phaser.Scene {
     // Knockback-scaled shake.
     this.shakeT = 0.12;
     this.shakeMag = Math.min(14, 3 + hb.damage * 0.6);
+    // STYLE: landing hits feeds energy; DRAIN converts dealt damage to HP.
+    // (Bullet hits call this too — gate on attacker so a bullet hitting YOU
+    // never "heals" you for its own damage.)
+    if (this.style && hb.attacker === this.p1) { this.style.onPlayerHit(hb); this.style.healFor(hb.damage); }
   }
 
   // Body-block: fighters can't occupy the same space. Push apart AND kill
@@ -995,6 +1123,29 @@ class FightScene extends Phaser.Scene {
     }
     // Labels.
     this.labels || this.makeLabels();
+
+    // ---- STYLE HUD: currency line + overlay (offer / death). No flashy
+    // reward effects yet (user: core first) — text only. ----
+    if (this.style) {
+      this.styleText.setText(this.style.hudLine());
+      const st = this.style;
+      if (st.pending === 'offer') {
+        const lines = ['WAVE CLEAR — pick a power (1/2/3, Enter = skip)', ''];
+        (st.offerChoices || []).forEach((id, i) => {
+          const d = window.STYLE_DEFS[id], nl = st.lvl(id) + 1;
+          const cost = nl === 1 ? window.STYLE_T.costPerBuy : window.STYLE_T.upgradeCost[nl - 1];
+          lines.push((i + 1) + '. ' + d.name + (nl > 1 ? ' LV' + nl : '') +
+                     '  [' + cost + ' SP]  ' + d.desc);
+        });
+        lines.push('', 'SP: ' + st.pts);
+        this.styleBig.setText(lines.join('\n')).setVisible(true);
+      } else if (st.pending === 'dead') {
+        this.styleBig.setText('RUN OVER — ' + st.kills + ' kills, ' + st.spEarned +
+          ' SP earned\nEnter = retry').setVisible(true);
+      } else {
+        this.styleBig.setVisible(false);
+      }
+    }
   }
 }
 

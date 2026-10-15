@@ -68,6 +68,7 @@
   </script>
   <!-- Level data is pure JS: safe to load on the menu screen too (cards build from it). -->
   <script src="js/levels.js?v=442e91e"></script>
+  <script src="js/style.js?v=442e91e"></script>
   <!-- Editor exports (LAN share via nocache_server PUT). Optional: 404 is fine,
        localStorage customs below carry the load on GitHub Pages. -->
   <script src="js/custom.js?v=442e91e" onerror=""></script>
@@ -126,6 +127,10 @@
           desc: 'Blade starter: J cuts, K cleaves — both deflect bullets.',
           tags: ['SWORD', 'WIP'], sky: [0x0c1418, 0x1c2a30], width: 1280,
           pillars: [{ x: 300, w: 60, y: -70 }], mooks: 0 },
+        { key: null, href: '?mooks=4&style=1', name: 'ROGUELIKE',
+          desc: 'Style powers: overkill kills earn SP, buy powers between waves. Q/E/R.',
+          tags: ['STYLE', 'WIP'], sky: [0x140c1c, 0x2a1c3a], width: 1280,
+          pillars: [{ x: 420, w: 60, y: -80 }, { x: 800, w: 60, y: -120 }], mooks: 4 },
       ]);
       const cards = document.getElementById('cards');
       let shown = 0;
