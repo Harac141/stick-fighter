@@ -62,6 +62,7 @@ class StyleManager {
     this.levels = {};                    // id -> level (1..3)
     this.slowActive = false;             // Q held this step (tick() owns)
     this.slowHeld = false;               // raw Q key state (scene key handler)
+    this.slowLatched = false;            // slow stays ON (draining armor/HP) once activated
     this.slowFactor = 1;                 // scene reads this for the world gate
     this.imbueT = 0;
     this.drainT = 0;
@@ -133,11 +134,18 @@ class StyleManager {
     } else p1.imbueMult = 1;
     if (this.drainT > 0) this.drainT--;
 
-    // Bullet time: hold-to-drain. Needs a little energy to START (no free
-    // face-melting), then falls through energy -> armor -> HP while held.
-    const wantSlow = this.has('slow') && this.slowHeld && !this.pending &&
-                     !p1.dead && this.energy > 0;
-    if (wantSlow) {
+    // Bullet time: hold-to-drain. ACTIVATION needs slowMinEnergy (the bar
+    // can't be started from empty); once latched (Q held) it keeps running
+    // energy -> armor (half rate) -> HP floor 1 even when the bar is dry.
+    // (FIX: the old gate required energy>0 every step, which switched slow
+    // OFF the instant energy emptied — the armor/HP stages were unreachable,
+    // so "armor does nothing" was literally true.)
+    if (!(this.has('slow') && this.slowHeld && !this.pending && !p1.dead)) {
+      this.slowLatched = false;
+    } else if (!this.slowLatched && this.energy >= T.slowMinEnergy) {
+      this.slowLatched = true;
+    }
+    if (this.slowLatched) {
       const dE = T.slowDrain[this.lvl('slow')] / 60;    // per frame
       if (this.energy >= dE) this.energy -= dE;
       else {
@@ -155,19 +163,25 @@ class StyleManager {
   }
 
   // ---- Wave-clear offer ----------------------------------------------------
+  // Returns true if an overlay actually opened. Pool empty (everything maxed)
+  // => false: the caller MUST keep the run going (arena spawns the next wave)
+  // — the old code set offered=true and returned, soft-locking the arena
+  // with no overlay and no respawn once all three powers hit LV3 (user's
+  // "game freezes up sometimes": wave cleared, nothing ever walked in).
   offerNow() {
-    if (this.pending) return;
-    this.offered = true;                 // re-armed by spawnMooks/fireZone
+    if (this.pending) return true;
     this.armor = Math.min(STYLE_T.armorMax, this.armor + STYLE_T.armorPerWave);
     // Pool: every power not yet at max level.
     const pool = Object.keys(STYLE_DEFS).filter((id) => this.lvl(id) < STYLE_DEFS[id].maxLvl);
-    if (!pool.length) return;
+    if (!pool.length) { this.offered = true; return false; }   // re-armed by nextWave/spawns
+    this.offered = true;                 // re-armed by spawnMooks/fireZone
     // 3 distinct picks (or fewer if the pool is small).
     const picks = [];
     const bag = pool.slice();
     while (picks.length < 3 && bag.length) picks.push(bag.splice(Math.floor(Math.random() * bag.length), 1)[0]);
     this.offerChoices = picks;
     this.pending = 'offer';
+    return true;
   }
 
   pickOffer(i) {

@@ -475,8 +475,6 @@ class FightScene extends Phaser.Scene {
       this.styleBig.setOrigin(0.5).setScrollFactor(0).setVisible(false);
       const kbS = this.input.keyboard;
       const kQ = kbS.addKey('Q'), kE = kbS.addKey('E'), kR = kbS.addKey('R');
-      const k1 = kbS.addKey('ONE'), k2 = kbS.addKey('TWO'), k3 = kbS.addKey('THREE');
-      const kEnter = kbS.addKey('ENTER');
       // Guard: scene.restart() does NOT destroy the keyboard manager (the
       // empty shutdown handler keeps every Phaser object alive), so without
       // this each retry would stack a second copy of every listener.
@@ -486,23 +484,22 @@ class FightScene extends Phaser.Scene {
         kQ.on('up',   () => { if (this.style) this.style.slowHeld = false; });
         kE.on('down', () => { if (this.style) this.style.pressImbue(); });
         kR.on('down', () => { if (this.style) this.style.pressDrain(); });
-        const pick = (i) => () => {
-          const st = this.style; if (!st) return;
+        // OFFER INPUT: raw keydown on the keyboard plugin, NOT addKey('ONE')
+        // — that maps only the number ROW (49-51); numpad 1/2/3 (97-99) did
+        // nothing, so a player answering the wave offer with the numpad left
+        // the world hanging forever = "the game froze after my attack".
+        // Enter (13/32 numpad) skips. Also tolerant of focus quirks.
+        kbS.on('keydown', (ev) => {
+          const st = this.style; if (!st || !ev) return;
+          const c = ev.keyCode;
           if (st.pending === 'offer') {
-            st.pickOffer(i);
-            // Arena roguelike: after the pick, the NEXT wave walks in. Level
-            // mode keeps its own trigger-zone pacing (no forced respawn).
-            if (!st.pending && !this.level && this.mookCount > 0) this.nextWave();
+            if (c === 49 || c === 97) { this.stylePick(0); }
+            else if (c === 50 || c === 98) { this.stylePick(1); }
+            else if (c === 51 || c === 99) { this.stylePick(2); }
+            else if (c === 13 || c === 32) { this.stylePick(-1); }
+          } else if (st.pending === 'dead' && (c === 13 || c === 32)) {
+            this.scene.restart();
           }
-        };
-        k1.on('down', pick(0)); k2.on('down', pick(1)); k3.on('down', pick(2));
-        kEnter.on('down', () => {
-          const st = this.style; if (!st) return;
-          if (st.pending === 'offer') {
-            st.pickOffer(-1);                                      // Enter = skip
-            if (!st.pending && !this.level && this.mookCount > 0) this.nextWave();
-          }
-          else if (st.pending === 'dead') this.scene.restart();    // Enter = retry run
         });
       }
     }
@@ -548,6 +545,15 @@ class FightScene extends Phaser.Scene {
   }
 
   // ---- STYLE (roguelike v1, ?style=1) --------------------------------------
+  // Offer pick shared by every input path (number row + numpad handlers).
+  stylePick(i) {
+    const st = this.style; if (!st || st.pending !== 'offer') return;
+    st.pickOffer(i);
+    // Arena roguelike: after the pick, the NEXT wave walks in. Level
+    // mode keeps its own trigger-zone pacing (no forced respawn).
+    if (!st.pending && !this.level && this.mookCount > 0) this.nextWave();
+  }
+
   // simGate: 1 = full sim; 0 = ONLY the player simulates (offer/death
   // overlay); f = BULLET TIME — non-player bodies are frozen by the arcade
   // (moves=false kills integration AND gravity — probe-verified on this
@@ -908,10 +914,15 @@ class FightScene extends Phaser.Scene {
     // (manual clamp above) and the sweep checks are no-ops for them.
     this.resolveGround();                    // floors/platforms/pits (levels; arena = groundY)
     // STYLE: wave clear = the between-waves power offer (also refills armor).
+    // If the offer pool is empty (all powers LV3), offerNow returns false —
+    // keep the run ALIVE: arena mode spawns the next wave immediately, or the
+    // world sits dead forever (the user's "game freezes up sometimes").
     if (st && !st.pending && !st.offered && !this.p1.dead && this.mookCount > 0) {
       const liveMooks = this.fighters.some((f) => f.ai && !f.dead);
       const allSpawned = !this.spawnZones || this.spawnZones.every((z) => z.done);
-      if (!liveMooks && allSpawned) st.offerNow();
+      if (!liveMooks && allSpawned) {
+        if (!st.offerNow() && !this.level) this.nextWave();
+      }
     }
     // Reap despawned corpses. Cost note: settled ragdolls integrate NOTHING
     // (frozen still image) and the flailer cap bounds simultaneous live ones,
