@@ -564,29 +564,47 @@ class FightScene extends Phaser.Scene {
   stepFighter(f, inp, gate) {
     if (f.dead) { if (f.ragdoll && !f.gone) f.ragStep(gate === 1 ? SIM_STEP : gate * SIM_STEP); return; }
     const b = f.body;
-    // gate === 0 hangs EVERYONE including the player (wave offer): arcade
-    // integration is global, so leaving the player live while resolveGround
-    // is gated would let gravity sink them through the floor under the text.
-    if (gate === 0) {
-      b.moves = false;
-      f.hitboxes.length = 0; f.guardBoxes.length = 0;
-      if (f.ai) f.aiIn = {};
-      return;
-    }
-    if (gate === 1 || f.inputKey) {         // the player simulates at full speed
+    // ---- PLAYERS: arcade-owned (unchanged). ----
+    if (f.inputKey) {
+      // gate === 0 hangs the player too (wave offer): arcade integration is
+      // global, so leaving the player live while resolveGround is gated would
+      // let gravity sink them through the floor under the text.
+      if (gate <= 0) { b.moves = false; f.hitboxes.length = 0; f.guardBoxes.length = 0; return; }
       b.moves = true;
-      if (f.ai) f.ai.think(this.fighters);
-      f.update(f.inputKey ? inp : (f.aiIn || {}));
+      f.update(inp);
       return;
     }
-    // frozen mook: no brain, no clocks, no hitboxes, arcade sits out.
-    if (f.ai) f.aiIn = {};
-    f.hitboxes.length = 0; f.guardBoxes.length = 0;
-    if (gate <= 0) { b.moves = false; return; }             // hang (offer/death)
-    b.moves = false;                                        // manual integrate @ f
-    b.velocity.y += CFG.gravity * SIM_STEP * gate;
-    f.sprite.x += b.velocity.x * SIM_STEP * gate;
-    f.sprite.y += b.velocity.y * SIM_STEP * gate;
+    // ---- MOOKS: integrator-owned at ALL gates (ragdoll idiom: moves=false
+    // => arcade world.step skips the body entirely, and we integrate by
+    // hand). Why not resume arcade after a freeze: arcade resumes from its
+    // stale internal reference and dumps the ENTIRE frozen wall-clock as one
+    // teleport (measured: 250px/s mook + 0.23s slow => 57px pop the frame Q
+    // released — the user's "enemies pop forward out of slow-mo"). One owner
+    // = no resume, no stale state, no pop, ever. ----
+    b.moves = false;
+    if (gate <= 0) {                       // hang (offer/death): clocks hold
+      if (f.ai) f.aiIn = {};
+      f.hitboxes.length = 0; f.guardBoxes.length = 0;
+      return;
+    }
+    if (gate >= 1) {                       // full speed: brain + clocks + physics
+      if (f.ai) f.ai.think(this.fighters);
+      f.update(f.aiIn || {});
+    } else {                               // slow-mo: AI/frame-clocks/hitboxes HOLD
+      if (f.ai) f.aiIn = {};
+      f.hitboxes.length = 0; f.guardBoxes.length = 0;
+    }
+    const dt = SIM_STEP * gate;
+    b.velocity.y += CFG.gravity * dt;
+    f.sprite.x += b.velocity.x * dt;
+    f.sprite.y += b.velocity.y * dt;
+    // World bounds (manual pass): moves=false also skips collideWorldBounds,
+    // so knockback could launch a mook off-world forever. Hard-stop at the
+    // edges, velocity killed (matches arcade restitution 0).
+    const hw = CFG.body.width / 2;
+    if (f.sprite.x < hw) { f.sprite.x = hw; b.velocity.x = 0; }
+    else if (f.sprite.x > this.levelWidth - hw) { f.sprite.x = this.levelWidth - hw; b.velocity.x = 0; }
+    b.updateFromGameObject();              // body.position tracks the sprite
     // Grounded clamp (manual pass only): arcade's per-step ground snap is
     // gated too, so WITHOUT this a footed mook sinks through the floor under
     // bullet time (gravity integrates at f-rate with no resolveGround).
@@ -913,7 +931,7 @@ class FightScene extends Phaser.Scene {
     // at full speed and needs the floor/pillar snap; frozen mooks sit still
     // (manual clamp above) and the sweep checks are no-ops for them.
     this.resolveGround();                    // floors/platforms/pits (levels; arena = groundY)
-    // STYLE: wave clear = the between-waves power offer (also refills armor).
+    // STYLE: wave clear = the between-waves power offer.
     // If the offer pool is empty (all powers LV3), offerNow returns false —
     // keep the run ALIVE: arena mode spawns the next wave immediately, or the
     // world sits dead forever (the user's "game freezes up sometimes").

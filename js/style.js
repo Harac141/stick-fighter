@@ -13,9 +13,8 @@
 //    (2) it regenerates passively, so hoarding wastes regen too, and
 //    (3) powers do NOT scale with stored energy: using it now costs exactly
 //    the same as saving it, so there is nothing to gain by saving.
-//  * ARMOR is the secondary buffer bullet time chews through after energy
-//    (and then HP) — "drains energy quickly" but a hoarded bar never
-//    blocks using the power, it just runs out.
+//  * Bullet time drains energy, then HP (floor 1) while held — the armor
+//    buffer was REMOVED (user: "too much to keep track of").
 //  * POWERS occupy SLOTS. New powers are bought between waves (pick 1 of 3,
 //    or skip) with SP. v1 pool: BULLET TIME (Q hold), IMBUE (E), DRAIN (R).
 //  * No audio/visual reward work yet (user: get the core right first).
@@ -33,19 +32,17 @@ const STYLE_T = {
   energyPerHit: 2,         // player attack lands
   energyPerSwat: 15,       // first deflection of a bullet
   energyPerKill: 12,
-  armorMax: 100,
-  armorPerWave: 25,        // armor restored on wave clear
   imbueCost: 40, imbueFrames: 360, imbueMult: [0, 2, 2.5, 3],
   drainCost: 40, drainFrames: 360, drainHeal: [0, 0.5, 0.65, 0.8],
   slowMinEnergy: 5,
   slowDrain: [0, 25, 20, 16],   // energy/s while Q held (by level)
   slowFactor: [0, 0.25, 0.2, 0.15], // world speed multiplier for non-player bodies
-  hpDrain: 10,             // HP/s once energy AND armor are gone
+  hpDrain: 10,             // HP/s while held once energy is gone (floor 1)
 };
 
 const STYLE_DEFS = {
   slow:  { key: 'Q', name: 'BULLET TIME', slots: 1, maxLvl: 3,
-           desc: 'Hold Q: world at 25% speed. Drains energy, then armor, then HP.' },
+           desc: 'Hold Q: world at 25% speed. Drains energy, then HP.' },
   imbue: { key: 'E', name: 'IMBUE', slots: 1, maxLvl: 3,
            desc: 'E: 6s, your attacks deal x2/x2.5/x3 damage.' },
   drain: { key: 'R', name: 'DRAIN', slots: 1, maxLvl: 3,
@@ -57,12 +54,11 @@ class StyleManager {
     this.scene = scene;
     this.pts = 0;
     this.energy = STYLE_T.energyStart;
-    this.armor = STYLE_T.armorMax;
     this.slots = [null, null, null];     // power ids (3 slots for the 3 v1 powers)
     this.levels = {};                    // id -> level (1..3)
     this.slowActive = false;             // Q held this step (tick() owns)
     this.slowHeld = false;               // raw Q key state (scene key handler)
-    this.slowLatched = false;            // slow stays ON (draining armor/HP) once activated
+    this.slowLatched = false;            // slow stays ON (draining energy->HP) once activated
     this.slowFactor = 1;                 // scene reads this for the world gate
     this.imbueT = 0;
     this.drainT = 0;
@@ -136,10 +132,7 @@ class StyleManager {
 
     // Bullet time: hold-to-drain. ACTIVATION needs slowMinEnergy (the bar
     // can't be started from empty); once latched (Q held) it keeps running
-    // energy -> armor (half rate) -> HP floor 1 even when the bar is dry.
-    // (FIX: the old gate required energy>0 every step, which switched slow
-    // OFF the instant energy emptied — the armor/HP stages were unreachable,
-    // so "armor does nothing" was literally true.)
+    // energy -> HP (floor 1) even when the bar is dry.
     if (!(this.has('slow') && this.slowHeld && !this.pending && !p1.dead)) {
       this.slowLatched = false;
     } else if (!this.slowLatched && this.energy >= T.slowMinEnergy) {
@@ -148,12 +141,7 @@ class StyleManager {
     if (this.slowLatched) {
       const dE = T.slowDrain[this.lvl('slow')] / 60;    // per frame
       if (this.energy >= dE) this.energy -= dE;
-      else {
-        this.energy = 0;
-        const dA = T.slowDrain[this.lvl('slow')] / 60 * 0.5;
-        if (this.armor >= dA) this.armor -= dA;
-        else { this.armor = 0; p1.health = Math.max(1, p1.health - T.hpDrain / 60); }
-      }
+      else { this.energy = 0; p1.health = Math.max(1, p1.health - T.hpDrain / 60); }
       this.slowActive = true;
       this.slowFactor = T.slowFactor[this.lvl('slow')] || 0.25;
     } else { this.slowActive = false; this.slowFactor = 1; }
@@ -170,7 +158,6 @@ class StyleManager {
   // "game freezes up sometimes": wave cleared, nothing ever walked in).
   offerNow() {
     if (this.pending) return true;
-    this.armor = Math.min(STYLE_T.armorMax, this.armor + STYLE_T.armorPerWave);
     // Pool: every power not yet at max level.
     const pool = Object.keys(STYLE_DEFS).filter((id) => this.lvl(id) < STYLE_DEFS[id].maxLvl);
     if (!pool.length) { this.offered = true; return false; }   // re-armed by nextWave/spawns
@@ -207,7 +194,7 @@ class StyleManager {
     if (this.has('drain')) acts.push('R drain ' + STYLE_T.drainCost);
     if (this.has('slow')) acts.push('Q slow');
     return 'SP ' + this.pts + '  EN ' + Math.round(this.energy) + '/' + STYLE_T.energyMax +
-           '  ARM ' + Math.round(this.armor) + '  KILLS ' + this.kills +
+           '  KILLS ' + this.kills +
            (acts.length ? '   ' + acts.join('  ') : '   (kill with overkill, clear a wave to buy)');
   }
 }
