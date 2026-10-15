@@ -291,6 +291,9 @@ class Fighter {
     this.chainStep = 0;
     this.chainT = 999;
     this.chainQueued = false;  // early-press held for the next cancel opportunity
+    this.heavyQueued = 0;      // buffered K press (frames remaining to fire)
+    this._heavyHeld = false;   // rising-edge latch for heavy
+    this._heavyMod = null;     // W/S modifier captured at the buffered press
     this.chainWindow = 32;     // frames after a link's start to press again & keep the chain
                                // (just past the 22f link cooldown: a relaxed
                                // human still links, but a deliberate pause resets)
@@ -363,6 +366,25 @@ class Fighter {
     // the chain by itself. A chain press = key newly down.
     const jabPressed = !!input.jab && !this._jabHeld;
     this._jabHeld = !!input.jab;
+    // HEAVY BUFFER (user: K died during a bullet-time walk-in): a K press
+    // that lands in a blocked state (attack recovery, post-attack tax,
+    // hitstun) used to EVAPORATE — jabs buffer via chainQueued, heavies had
+    // nothing. Bullet time multiplies the problem ~4x: the same 22f tax is
+    // ~370ms of wall clock while you're mashing K at a walking pace. Capture
+    // the rising edge anywhere (incl. hitstun's early return) and fire it
+    // once the fighter is actionable again. Players only; 40-frame window
+    // (~0.7s) covers press-anywhere-during-an-attack without lingering.
+    const heavyPressed = !!input.heavy && !this._heavyHeld;
+    this._heavyHeld = !!input.heavy;
+    if (!this.ai) {
+      if (heavyPressed && (this.hitstun > 0 || this.currentAttack || this.attackCooldown > 0)) {
+        this.heavyQueued = 40;
+        // Remember the W/S modifier at PRESS time — selectAttack at fire
+        // time must see the chord the player actually used (W+K=cartwheel).
+        this._heavyMod = input.up ? 'up' : (input.down ? 'down' : null);
+      }
+      if (this.heavyQueued > 0) this.heavyQueued--;
+    }
     if (this.chainT < 900) this.chainT++;   // frames since last chain link started
     if (this.invuln > 0) this.invuln--;
     if (this.muzzleT > 0) this.muzzleT--;
@@ -486,6 +508,22 @@ class Fighter {
         && this.chainStep === 2 && this.chainT <= this.chainWindow) {
       const mv = this.selectAttack(input);
       if (mv && mv !== 'shoot') { this.startAttack(mv); return; }
+    }
+
+    // ---- Buffered heavy fire (capture lives in the update prologue) ----
+    // A K pressed while blocked (recovery, hitstun, tax) replays the moment
+    // we're actionable. Live presses already fired above, so this only
+    // catches dropped ones. Modifier is replayed from PRESS time. Committed
+    // heavy-cancels bypass the post-jab tax like chain links do (the tax
+    // gates the NEXT string, never a press you already made).
+    if (this.heavyQueued > 0 && !this.currentAttack && !this.ai
+        && !this.airborne
+        && (this.state === 'idle' || this.state === 'run')
+        && (this.attackCooldown === 0
+            || (this.chainStep === 2 && this.chainT <= this.chainWindow))) {
+      const mv = this.selectAttack({ heavy: true,
+        up: this._heavyMod === 'up', down: this._heavyMod === 'down' });
+      if (mv && mv !== 'shoot') { this.heavyQueued = 0; this.startAttack(mv); return; }
     }
 
     // ---- Dash (ground only) ----
@@ -630,6 +668,9 @@ class Fighter {
       this.chainStep = 0;
     }
     this.chainQueued = false;
+    // Any attack START consumes a pending buffered-K intent (prevents the
+    // press that live-cancelled into this attack from double-firing later).
+    this.heavyQueued = 0; this._heavyMod = null;
     this.currentAttack = name;
     this.attackFrame = 0;
     this.hitConfirmed = false;
