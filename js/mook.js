@@ -115,7 +115,8 @@ class MookAI {
     // cannot gun down someone standing at its base.
     const perch = f.scene.pillarUnder(f);
     const GRACE = 240;
-    for (const p of lv.pillars) {
+    for (const p of lv.blocks) {
+      if (p.skybox) continue;
       let t0 = (p === perch) ? Math.min(dist, GRACE) : 0, t1 = dist;
       if (Math.abs(ux) < 1e-6) {
         if (mx < p.x || mx > p.x + p.w) continue;          // outside x-span
@@ -125,9 +126,9 @@ class MookAI {
         t0 = Math.max(t0, a); t1 = Math.min(t1, b);
       }
       if (Math.abs(uy) < 1e-6) {
-        if (my < p.top || my > f.scene.groundY) t1 = -1;   // outside y-span
+        if (my < p.top || my > p.bottom) t1 = -1;          // outside y-span
       } else {
-        let a = (p.top - my) / uy, b = (f.scene.groundY - my) / uy;
+        let a = (p.top - my) / uy, b = (p.bottom - my) / uy;
         if (a > b) { const s = a; a = b; b = s; }
         t0 = Math.max(t0, a); t1 = Math.min(t1, b);
       }
@@ -207,8 +208,9 @@ class MookAI {
           for (let i2 = 1; i2 < this._fh.length; i2++)
             path += Math.abs(this._fh[i2] - this._fh[i2 - 1]);
           if (path <= 40 &&
-              f.scene.pillarSide(f.sprite.x + away * 30,
-                                 f.sprite.y + f.body.height / 2, 20)) {
+              f.scene.blockSide(f.sprite.x + away * 30,
+                                 f.sprite.y - f.body.height / 2,
+                                 f.sprite.y + f.body.height / 2, 20)?.axis === 'x') {
             if (this._wallSeen) {          // second consecutive sample: commit
               this.vaultDir = away; this.vaultT = 55; this._vaultCool = 60;
               this._wallSeen = false;
@@ -275,8 +277,9 @@ class MookAI {
         let path = 0;
         for (let i = 1; i < this._hist.length; i++) path += Math.abs(this._hist[i] - this._hist[i - 1]);
         const wallAhead = !f.airborne && pressing && path <= 40
-          && !!f.scene.pillarSide(f.sprite.x + (this.dec.dir || this.facing) * 30,
-                                  f.sprite.y + f.body.height / 2, 20);
+          && (f.scene.blockSide(f.sprite.x + (this.dec.dir || this.facing) * 30,
+                f.sprite.y - f.body.height / 2,
+                f.sprite.y + f.body.height / 2, 20)?.axis === 'x');
         this.stuckT = wallAhead ? (this.stuckT || 0) + 1 : 0;
       }
       this._sxT--;

@@ -5,10 +5,12 @@
 // loaded here — only levels.js for templates — so the editor boots instantly
 // and can never crash on game changes.
 //
-// World coords match the game: groundY 620, pillar {x,w,y} with y = height
-// above ground (negative). Screen mapping pins the ground line at cy 540:
-//   sy = wy*zoom + (540 - 620*zoom)
-// so zoom never moves the floor.
+// World coords match the game: groundY 620; blocks {x,w,y,h} with y = top
+// height above ground (negative) and h = thickness downward; legacy pillars
+// {x,w,y} still edit (solid columns — kept as-is so old maps keep their look).
+//
+//   sy = wy*zoom + (540 - 620*zoom)   (ground pinned at cy 540: zoom never
+//                                      moves the floor)
 (function () {
   'use strict';
   const GROUND = 620, CY = 540, CW = 1280, CH = 560;
@@ -28,7 +30,7 @@
       desc: 'A fresh arena.', width: 2600,
       sky: SKIES[0].sky.slice(), p1x: 200, respawnX: 160,
       floors: [{ x: 0, w: 2600 }],   // one continuous slab (pits dormant)
-      pillars: [], spawns: [],
+      pillars: [], blocks: [], spawns: [],
     };
   }
 
@@ -45,14 +47,14 @@
     if (!Number.isFinite(d.respawnX)) d.respawnX = 160;
     if (!Array.isArray(d.floors) || !d.floors.length) d.floors = [{ x: 0, w: d.width }];
     if (!Array.isArray(d.pillars)) d.pillars = [];
+    if (!Array.isArray(d.blocks)) d.blocks = [];
     if (!Array.isArray(d.spawns)) d.spawns = [];
     return d;
   }
   let tool = 'select';
-  let sel = null;              // {kind:'pillar'|'spawn'|'p1', i}
+  let sel = null;              // {kind:'pillar'|'block'|'spawn'|'p1', i}
   let camX = 1300, zoom = 1;   // view centre (world px) / zoom
-  let drag = null;             // active drag state
-  let ghost = null;            // pillar-create preview {x0,x1}
+  let ghost = null;            // create preview {kind, x0,y0,x1?,y1?}
   const undoStack = [];
 
   const cv = document.getElementById('cv');
@@ -77,11 +79,14 @@
   const snapG = (v) => Math.round(v / 10) * 10;
 
   // ---- geometry helpers ----
-  const effX = (sp) => sp.pillar != null && doc.pillars[sp.pillar]
-    ? doc.pillars[sp.pillar].x + doc.pillars[sp.pillar].w / 2 : sp.x;
-  const pillarTop = (p) => GROUND + (p.y || 0);
-  const spawnY = (sp) => sp.pillar != null && doc.pillars[sp.pillar]
-    ? pillarTop(doc.pillars[sp.pillar]) : GROUND;
+  // Pinned spawns reference EITHER legacy pillars[] or blocks[]; block
+  // indices are RAW (the loader offsets past legacy pillars at boot).
+  const pinObj = (sp) => sp.block != null ? doc.blocks[sp.block]
+                     : sp.pillar != null ? doc.pillars[sp.pillar] : null;
+  const effX = (sp) => { const o = pinObj(sp); return o ? o.x + o.w / 2 : sp.x; };
+  const objTop = (o) => GROUND + (o.y || 0);
+  const objBottom = (o) => Math.min(GROUND, GROUND + (o.y || 0) + Math.max(30, Number(o.h) || -(o.y || 0)));
+  const spawnY = (sp) => { const o = pinObj(sp); return o ? objTop(o) : GROUND; };
   const spawnType = (sp) => (sp.knobs && sp.knobs.weapon) ? 'gunner'
     : (sp.knobs && sp.knobs.hp > 12) ? 'elite' : 'mook';
   const TYPE_KNOBS = {
@@ -92,16 +97,21 @@
   const TYPE_COUNT = { mook: 4, elite: 2, gunner: 1 };
   const TYPE_COLOR = { mook: '#ff8f5a', elite: '#ffd166', gunner: '#ffe066' };
 
-  // Hit tests in screen space (topmost first: handles > spawns > p1 > pillar).
+  // Hit tests in screen space (topmost first: handles > spawns > p1 > block > pillar).
   function pick(mx, my) {
-    // resize handles on a selected pillar
-    if (sel && sel.kind === 'pillar') {
-      const p = doc.pillars[sel.i];
-      if (p) {
-        const hx = sx(p.x + p.w), hy = sy(pillarTop(p) + (GROUND - pillarTop(p)) / 2);
-        if (Math.hypot(mx - hx, my - hy) < 9) return { kind: 'handle-w', i: sel.i };
-        const tx = sx(p.x + p.w / 2), ty = sy(pillarTop(p));
-        if (Math.hypot(mx - tx, my - ty) < 9) return { kind: 'handle-h', i: sel.i };
+    // resize handles on a selected block/pillar
+    if (sel && (sel.kind === 'block' || sel.kind === 'pillar')) {
+      const o = sel.kind === 'block' ? doc.blocks[sel.i] : doc.pillars[sel.i];
+      if (o) {
+        const top = objTop(o), bot = objBottom(o);
+        const hx = sx(o.x + o.w), hy = sy((top + bot) / 2);
+        if (Math.hypot(mx - hx, my - hy) < 9) return { kind: 'handle-w', selKind: sel.kind, i: sel.i };
+        const tx = sx(o.x + o.w / 2), ty = sy(top);
+        if (Math.hypot(mx - tx, my - ty) < 9) return { kind: 'handle-h', selKind: sel.kind, i: sel.i };
+        if (sel.kind === 'block') {
+          const by = sy(bot);
+          if (Math.hypot(mx - tx, my - by) < 9) return { kind: 'handle-thick', selKind: 'block', i: sel.i };
+        }
       }
     }
     for (let i = doc.spawns.length - 1; i >= 0; i--) {
@@ -117,25 +127,35 @@
       if (Math.abs(mx - px) < 20 * zoom + 4 && my < py + 6 && my > py - 92 * zoom)
         return { kind: 'p1' };
     }
+    for (let i = doc.blocks.length - 1; i >= 0; i--) {
+      const b = doc.blocks[i];
+      if (mx >= sx(b.x) && mx <= sx(b.x + b.w) && my >= sy(objTop(b)) && my <= sy(objBottom(b)))
+        return { kind: 'block', i };
+    }
     for (let i = doc.pillars.length - 1; i >= 0; i--) {
       const p = doc.pillars[i];
-      if (mx >= sx(p.x) && mx <= sx(p.x + p.w) && my >= sy(pillarTop(p)) && my <= sy(GROUND))
+      if (mx >= sx(p.x) && mx <= sx(p.x + p.w) && my >= sy(objTop(p)) && my <= sy(GROUND))
         return { kind: 'pillar', i };
     }
     return null;
   }
 
-  const pillarAtWorld = (wpx) => {
+  // Which solid object (block first — drawn on top) contains a world x?
+  const solidAtWorld = (wpx) => {
+    for (let i = doc.blocks.length - 1; i >= 0; i--) {
+      const b = doc.blocks[i];
+      if (wpx >= b.x && wpx <= b.x + b.w) return { kind: 'block', i };
+    }
     for (let i = doc.pillars.length - 1; i >= 0; i--) {
       const p = doc.pillars[i];
-      if (wpx >= p.x && wpx <= p.x + p.w) return i;
+      if (wpx >= p.x && wpx <= p.x + p.w) return { kind: 'pillar', i };
     }
     return null;
   };
 
   // ---- pointer state ----
   let panning = null;      // {mx0, camX0}
-  let moving = null;       // {kind, i, grab} offsets
+  let moving = null;       // {kind, selKind, i, grab} offsets
 
   cv.addEventListener('contextmenu', (e) => e.preventDefault());
   cv.addEventListener('mousedown', (e) => {
@@ -147,21 +167,23 @@
       if (e.button !== 2 && tool === 'select') { sel = null; drawProps(); }
       return;
     }
-    if (tool === 'pillar') { ghost = { x0: snapG(wx(mx)) }; return; }
+    if (tool === 'pillar') { ghost = { kind: 'pillar', x0: snapG(wx(mx)), y0: snapG(wy(mx)) }; return; }
+    if (tool === 'block') { ghost = { kind: 'block', x0: snapG(wx(mx)), y0: snapG(wy(mx)) }; return; }
     if (tool === 'erase') {
       const k = pick(mx, my);
-      if (!k || k.kind === 'handle-w' || k.kind === 'handle-h') return;
+      if (!k || k.kind.startsWith('handle')) return;
       snap();
       if (k.kind === 'spawn') doc.spawns.splice(k.i, 1);
       else if (k.kind === 'pillar') removePillar(k.i);
+      else if (k.kind === 'block') removeBlock(k.i);
       sel = null; drawProps(); return;
     }
     if (tool === 'mook' || tool === 'elite' || tool === 'gunner') {
       snap();
       const wpx = snapG(wx(mx));
-      const onPil = pillarAtWorld(wpx);
+      const on = solidAtWorld(wpx);
       const sp = { x: wpx, count: TYPE_COUNT[tool], knobs: TYPE_KNOBS[tool]() };
-      if (onPil != null) { sp.pillar = onPil; sp.x = 0; }   // x unused when pinned
+      if (on) { if (on.kind === 'block') sp.block = on.i; else sp.pillar = on.i; sp.x = 0; }
       doc.spawns.push(sp);
       sel = { kind: 'spawn', i: doc.spawns.length - 1 };
       drawProps(); return;
@@ -169,14 +191,19 @@
     // select tool on an object: pick + start move
     const k = pick(mx, my);
     if (!k) return;
-    sel = k.kind.startsWith('handle') ? { kind: 'pillar', i: k.i } : k;
+    sel = k.kind.startsWith('handle') ? { kind: k.selKind || 'block', i: k.i } : k;
     drawProps();
-    if (k.kind === 'handle-w' || k.kind === 'handle-h') {
-      snap(); moving = { kind: k.kind, i: k.i };
-    } else if (k.kind === 'pillar' || k.kind === 'spawn') {
+    if (k.kind === 'handle-w' || k.kind === 'handle-h' || k.kind === 'handle-thick') {
+      snap(); moving = { kind: k.kind, selKind: k.selKind || 'block', i: k.i };
+    } else if (k.kind === 'block' || k.kind === 'pillar' || k.kind === 'spawn') {
       snap();
-      moving = { kind: k.kind, i: k.i, grab: wx(mx) - effX(k.kind === 'pillar' ? doc.pillars[k.i] : Object.assign({ x: effX(doc.spawns[k.i]) }, {})) };
-      if (k.kind === 'spawn' && doc.spawns[k.i].pillar != null) doc.spawns[k.i].pillar = null; // unpinned drag follows x
+      const o = k.kind === 'spawn' ? { x: effX(doc.spawns[k.i]) }
+              : k.kind === 'block' ? doc.blocks[k.i] : doc.pillars[k.i];
+      moving = { kind: k.kind, i: k.i, grab: wx(mx) - o.x };
+      if (k.kind === 'block') moving.grabY = wy(mx) - objTop(doc.blocks[k.i]);
+      if (k.kind === 'spawn' && (doc.spawns[k.i].block != null || doc.spawns[k.i].pillar != null)) {
+        doc.spawns[k.i].block = null; doc.spawns[k.i].pillar = null;  // unpinned drag follows x
+      }
     } else if (k.kind === 'p1') { snap(); moving = { kind: 'p1', grab: wx(mx) - doc.p1x }; }
   });
   addEventListener('mousemove', (e) => {
@@ -184,20 +211,34 @@
     const mx = (e.clientX - r.left) * (CW / r.width);
     const my = (e.clientY - r.top) * (CH / r.height);
     if (panning) { camX = panning.camX0 - ((e.clientX - r.left) - panning.mx0) * (CW / r.width) / zoom; return; }
-    if (ghost) { ghost.x1 = snapG(wx(mx)); return; }
+    if (ghost) { ghost.x1 = snapG(wx(mx)); ghost.y1 = snapG(wy(mx)); return; }
     if (!moving) return;
     const W = Number(widthEl.value) || doc.width;
     if (moving.kind === 'p1') {
       doc.p1x = Math.max(40, Math.min(W - 40, snapG(wx(mx) - moving.grab)));
     } else if (moving.kind === 'handle-w') {
-      const p = doc.pillars[moving.i];
-      p.w = Math.max(40, Math.min(600, snapG(wx(mx) - p.x)));
+      const o = moving.selKind === 'block' ? doc.blocks[moving.i] : doc.pillars[moving.i];
+      o.w = Math.max(40, Math.min(1200, snapG(wx(mx) - o.x)));
     } else if (moving.kind === 'handle-h') {
-      const p = doc.pillars[moving.i];
-      p.y = Math.max(-500, Math.min(-30, snapG(wy(my) - GROUND)));
+      const o = moving.selKind === 'block' ? doc.blocks[moving.i] : doc.pillars[moving.i];
+      const top = Math.max(-560, Math.min(-30, snapG(wy(mx) - GROUND)));
+      if (moving.selKind === 'block') { const bot = objBottom(o); o.y = top; o.h = Math.max(30, bot - (GROUND + top)); }
+      else o.y = top;
+    } else if (moving.kind === 'handle-thick') {
+      const o = doc.blocks[moving.i];
+      const bot = Math.max(objTop(o) + 30, Math.min(GROUND, snapG(wy(mx))));
+      o.h = Math.max(30, bot - objTop(o));
+    } else if (moving.kind === 'block') {
+      const o = doc.blocks[moving.i];
+      o.x = Math.max(0, Math.min(W - o.w, snapG(wx(mx) - moving.grab)));
+      // Free 2D placement — that's the whole point of blocks vs pillars.
+      // The bottom rides along (thickness preserved); props re-clamp.
+      const top = Math.max(-560, Math.min(0, snapG(wy(mx) - moving.grabY)));
+      o.h = Math.max(30, Math.min(560, objBottom(o) - (GROUND + top)));
+      o.y = top;
     } else if (moving.kind === 'pillar') {
-      const p = doc.pillars[moving.i];
-      p.x = Math.max(0, Math.min(W - p.w, snapG(wx(mx) - moving.grab)));
+      const o = doc.pillars[moving.i];
+      o.x = Math.max(0, Math.min(W - o.w, snapG(wx(mx) - moving.grab)));
     } else if (moving.kind === 'spawn') {
       doc.spawns[moving.i].x = Math.max(20, Math.min(W - 20, snapG(wx(mx) - moving.grab)));
     }
@@ -205,7 +246,18 @@
   addEventListener('mouseup', () => {
     if (ghost && ghost.x1 != null) {
       const a = Math.min(ghost.x0, ghost.x1), b = Math.max(ghost.x0, ghost.x1);
-      if (b - a >= 40) {
+      if (ghost.kind === 'block' && ghost.y1 != null) {
+        // Roof/ledge/crate: any rect, both axes snapped to the 10px grid.
+        const t = Math.min(ghost.y0, ghost.y1), bo = Math.max(ghost.y0, ghost.y1);
+        if (b - a >= 40 && bo - t >= 30) {
+          snap();
+          const y = Math.max(-560, Math.min(0, t));               // top height above ground (neg)
+          const h = Math.max(30, Math.min(560, bo - t));          // thickness downward
+          doc.blocks.push({ x: Math.max(0, a), w: b - a, y, h });
+          sel = { kind: 'block', i: doc.blocks.length - 1 };
+          drawProps();
+        }
+      } else if (b - a >= 40) {
         snap();
         doc.pillars.push({ x: Math.max(0, a), w: b - a, y: -80 });
         sel = { kind: 'pillar', i: doc.pillars.length - 1 };
@@ -232,9 +284,18 @@
       snap();
       if (sel.kind === 'spawn') doc.spawns.splice(sel.i, 1);
       else if (sel.kind === 'pillar') removePillar(sel.i);
+      else if (sel.kind === 'block') removeBlock(sel.i);
       sel = null; drawProps();
     }
-    else if ('123456'.includes(e.key)) setTool(['select', 'pillar', 'mook', 'elite', 'gunner', 'erase'][Number(e.key) - 1]);
+    else if ((e.key === 'x' || e.key === 's') && !e.ctrlKey && !e.metaKey && sel && sel.kind === 'block') {
+      // Toggle the SKYBOX marker flag (S is safe here: Ctrl+S saves, and the
+      // guard above keeps it out of text fields).
+      snap();
+      const o = doc.blocks[sel.i];
+      o.skybox = !o.skybox;
+      drawProps(); status(o.skybox ? 'skybox marker (editor-only, no collision)' : 'solid block');
+    }
+    else if ('1234567'.includes(e.key)) setTool(['select', 'pillar', 'block', 'mook', 'elite', 'gunner', 'erase'][Number(e.key) - 1]);
   });
 
   function removePillar(i) {
@@ -244,6 +305,13 @@
       else if (sp.pillar > i) sp.pillar--;
     }
     doc.pillars.splice(i, 1);
+  }
+  function removeBlock(i) {
+    for (const sp of doc.spawns) {
+      if (sp.block === i) { sp.x = doc.blocks[i].x + doc.blocks[i].w / 2; sp.block = null; }
+      else if (sp.block > i) sp.block--;
+    }
+    doc.blocks.splice(i, 1);
   }
 
   // ---- tools / toolbar ----
@@ -262,7 +330,8 @@
       const el = doc.spawns.filter((s) => spawnType(s) === 'elite').reduce((a, s) => a + s.count, 0);
       const gu = doc.spawns.filter((s) => spawnType(s) === 'gunner').reduce((a, s) => a + s.count, 0);
       propsEl.innerHTML = '<span style="color:#5b6a94">no selection</span><br><br>'
-        + doc.pillars.length + ' pillars<br>' + mo + ' mooks · ' + el + ' elites · ' + gu + ' gunners<br>'
+        + doc.pillars.length + ' pillars · ' + doc.blocks.length + ' blocks<br>'
+        + mo + ' mooks · ' + el + ' elites · ' + gu + ' gunners<br>'
         + 'p1 @ ' + doc.p1x + ' (drag the white stick)';
       return;
     }
@@ -273,7 +342,24 @@
       return '<label>' + label + ' <input id="' + id + '" type="number" value="' + val
         + '" min="' + min + '" max="' + max + '" step="' + (step || 10) + '"></label>';
     };
-    if (sel.kind === 'pillar') {
+    if (sel.kind === 'block') {
+      const o = doc.blocks[sel.i];
+      if (!o) { sel = null; return drawProps(); }
+      propsEl.innerHTML = '<b>BLOCK ' + sel.i + (o.skybox ? ' · SKYBOX' : '') + '</b>'
+        + num('x', o.x, (v) => { o.x = v; }, 0, doc.width - o.w)
+        + num('width', o.w, (v) => { o.w = v; }, 40, 1200)
+        + num('height', -(o.y || 0), (v) => { o.y = -v; }, 0, 560)
+        + num('thick', Math.round(Number(o.h) || 30), (v) => { o.h = v; }, 30, 560)
+        + '<label><input type="checkbox" id="p_sky"' + (o.skybox ? ' checked' : '')
+        + '> skybox (marker only — no collision)</label>'
+        + '<div style="margin-top:8px;color:#5b6a94">handles: right = width · top = height · bottom = thickness<br>'
+        + 'all four faces solid: land on top, bonk under, wall at sides.<br>'
+        + 'X or S toggles skybox while selected.</div>';
+      setTimeout(() => {
+        const sk = document.getElementById('p_sky');
+        if (sk) sk.addEventListener('change', () => { snap(); o.skybox = sk.checked; drawProps(); });
+      }, 0);
+    } else if (sel.kind === 'pillar') {
       const p = doc.pillars[sel.i];
       if (!p) { sel = null; return drawProps(); }
       propsEl.innerHTML = '<b>PILLAR ' + sel.i + '</b>'
@@ -285,6 +371,7 @@
       const sp = doc.spawns[sel.i];
       if (!sp) { sel = null; return drawProps(); }
       const t = spawnType(sp);
+      const pinned = pinObj(sp);
       propsEl.innerHTML = '<b>SPAWN ' + sel.i + '</b>'
         + '<label>type <select id="p_type">'
         + ['mook', 'elite', 'gunner'].map((k) =>
@@ -293,29 +380,33 @@
         + num('count', sp.count, (v) => { sp.count = Math.max(1, Math.min(8, v)); }, 1, 8, 1)
         + num('trigger x', sp.trigger == null ? '' : sp.trigger,
               (v) => { sp.trigger = v ? Math.max(100, Math.min(doc.width - 100, v)) : null; }, 100, doc.width - 100)
-        + (sp.pillar != null
-            ? '<div style="margin-top:8px;color:#ffe066">pinned on pillar ' + sp.pillar + '</div>'
+        + (pinned != null
+            ? '<div style="margin-top:8px;color:#ffe066">pinned on '
+              + (sp.block != null ? 'block ' + sp.block : 'pillar ' + sp.pillar) + '</div>'
               + '<label><input type="checkbox" id="p_pin" checked> pinned</label>'
-            : '<div style="margin-top:8px;color:#5b6a94">floor zone — drop on a pillar to pin</div>')
+            : '<div style="margin-top:8px;color:#5b6a94">floor zone — drop on a block/pillar to pin</div>')
         + '<div style="margin-top:6px;color:#5b6a94">trigger = mooks arrive when p1 passes x</div>';
       setTimeout(() => {
         const ty = document.getElementById('p_type');
         if (ty) ty.addEventListener('change', () => {
           snap();
           sp.knobs = TYPE_KNOBS[ty.value]();
-          if (ty.value === 'gunner' && sp.pillar == null) {
-            // Auto-pin to the tallest pillar so the sniper gets his perch.
-            let best = -1, bi = null;
-            doc.pillars.forEach((p, i) => { if ((p.y || 0) < best) { best = p.y || 0; bi = i; } });
-            if (bi != null) { sp.pillar = bi; sp.x = 0; status('gunner auto-pinned to tallest pillar'); }
+          if (ty.value === 'gunner' && sp.block == null && sp.pillar == null) {
+            // Auto-pin to the TALLEST solid (block or pillar) so the sniper
+            // gets the high perch (rooftop gunners are the whole point).
+            let best = 0, bestRef = null;
+            doc.pillars.forEach((p, i) => { const hh = -(p.y || 0); if (hh > best) { best = hh; bestRef = { pillar: i }; } });
+            doc.blocks.forEach((b, i) => { if (b.skybox) return; const hh = -(b.y || 0); if (hh > best) { best = hh; bestRef = { block: i }; } });
+            if (bestRef) { Object.assign(sp, bestRef); sp.x = 0; status('gunner auto-pinned to tallest solid'); }
           }
           drawProps();
         });
         const pin = document.getElementById('p_pin');
         if (pin) pin.addEventListener('change', () => {
           snap();
-          if (pin.checked) { const i = pillarAtWorld(effX(sp)); if (i != null) { sp.pillar = i; sp.x = 0; } }
-          else { sp.x = effX(sp); sp.pillar = null; }
+          if (pin.checked) { const on = solidAtWorld(effX(sp));
+            if (on) { if (on.kind === 'block') sp.block = on.i; else sp.pillar = on.i; sp.x = 0; } }
+          else { sp.x = effX(sp); sp.block = null; sp.pillar = null; }
           drawProps();
         });
       }, 0);
@@ -360,7 +451,7 @@
     const name = cleanName(nameEl.value);
     if (!name) return status('name: a-z 0-9 _ - required', true);
     if (window.LEVELS && window.LEVELS[name]) return status('"' + name + '" is a built-in name', true);
-    if (doc.pillars.length === 0 && doc.spawns.length === 0)
+    if (doc.pillars.length === 0 && doc.blocks.length === 0 && doc.spawns.length === 0)
       return status('empty map — add something first', true);
     const all = loadLS();
     doc.floors = [{ x: 0, w: doc.width }];
@@ -368,7 +459,8 @@
     all[name] = JSON.parse(JSON.stringify(doc));
     try { saveLS(all); } catch (e) { return status('localStorage full?', true); }
     nameEl.value = name;
-    status('saved "' + name + '" ✓  ' + doc.pillars.length + ' pillars · ' + doc.spawns.length + ' zones');
+    status('saved "' + name + '" ✓  ' + doc.pillars.length + ' pillars · ' + doc.blocks.length
+           + ' blocks · ' + doc.spawns.length + ' zones');
     tryShare(name);
   }
   document.getElementById('saveBtn').addEventListener('click', doSave);
@@ -422,18 +514,27 @@
   document.getElementById('importBtn').addEventListener('click', () => {
     try {
       const d = JSON.parse(ioText.value);
-      if (typeof d.width !== 'number' || !Array.isArray(d.pillars) || !Array.isArray(d.spawns))
-        throw new Error('need width/pillars/spawns');
+      if (typeof d.width !== 'number' || !Array.isArray(d.spawns)
+          || (!Array.isArray(d.pillars) && !Array.isArray(d.blocks)))
+        throw new Error('need width/pillars|blocks/spawns');
       snap();
       doc = {
         desc: String(d.desc || 'imported'), width: Math.max(1280, Math.min(8192, d.width)),
         sky: Array.isArray(d.sky) && d.sky.length === 2 ? d.sky.map(Number) : SKIES[0].sky.slice(),
         p1x: Number(d.p1x) || 200, respawnX: Number(d.respawnX) || 160,
         floors: [{ x: 0, w: Math.max(1280, Math.min(8192, d.width)) }],
-        pillars: d.pillars.map((p) => ({ x: Number(p.x) || 0, w: Math.max(40, Number(p.w) || 40), y: Math.max(-500, Math.min(-30, Number(p.y) || -30)) })),
-        spawns: d.spawns.map((s) => ({ x: Number(s.x) || 0, count: Math.max(1, Math.min(8, Number(s.count) || 1)),
-          trigger: s.trigger == null ? null : Number(s.trigger), knobs: s.knobs || {},
-          pillar: s.pillar == null ? null : Math.max(0, Math.min(d.pillars.length - 1, Number(s.pillar))) })),
+        pillars: (d.pillars || []).map((p) => ({ x: Number(p.x) || 0, w: Math.max(40, Number(p.w) || 40), y: Math.max(-500, Math.min(-30, Number(p.y) || -30)) })),
+        blocks: (d.blocks || []).map((b) => ({ x: Number(b.x) || 0, w: Math.max(40, Number(b.w) || 40),
+          y: Math.max(-560, Math.min(0, Number(b.y) || -30)),
+          h: Math.max(30, Math.min(560, Number(b.h) || 30)), skybox: !!b.skybox })),
+        spawns: d.spawns.map((s) => {
+          const o = { x: Number(s.x) || 0, count: Math.max(1, Math.min(8, Number(s.count) || 1)),
+            trigger: s.trigger == null ? null : Number(s.trigger), knobs: s.knobs || {},
+            pillar: s.pillar == null ? null : Math.max(0, Math.min((d.pillars || []).length - 1, Number(s.pillar))),
+            block: s.block == null ? null : Math.max(0, Math.min((d.blocks || []).length - 1, Number(s.block))) };
+          if (o.block != null) o.pillar = null;   // block pin wins; never both
+          return o;
+        }),
       };
       syncFields(); sel = null; drawProps(); modal.style.display = 'none';
       status('imported ✓');
@@ -483,18 +584,49 @@
         ctx.beginPath(); ctx.moveTo(sx(gx), 0); ctx.lineTo(sx(gx), sy(GROUND)); ctx.stroke();
       }
     }
-    // pillars
+    // legacy pillars (solid columns to the floor)
     doc.pillars.forEach((p, i) => {
-      ctx.fillStyle = i === (sel && sel.kind === 'pillar' ? sel.i : -1) ? '#2f3c66' : '#232c4c';
-      ctx.fillRect(sx(p.x), sy(pillarTop(p)), p.w * zoom, (GROUND - pillarTop(p)) * zoom);
-      ctx.strokeStyle = i === (sel && sel.kind === 'pillar' ? sel.i : -1) ? '#ffe066' : '#6f86c8';
+      const on = sel && sel.kind === 'pillar' && sel.i === i;
+      ctx.fillStyle = on ? '#2f3c66' : '#232c4c';
+      ctx.fillRect(sx(p.x), sy(objTop(p)), p.w * zoom, (GROUND - objTop(p)) * zoom);
+      ctx.strokeStyle = on ? '#ffe066' : '#6f86c8';
       ctx.lineWidth = 2;
-      ctx.strokeRect(sx(p.x), sy(pillarTop(p)), p.w * zoom, (GROUND - pillarTop(p)) * zoom);
-      // resize handles
-      if (sel && sel.kind === 'pillar' && sel.i === i) {
+      ctx.strokeRect(sx(p.x), sy(objTop(p)), p.w * zoom, (GROUND - objTop(p)) * zoom);
+      if (on) {
         ctx.fillStyle = '#ffe066';
-        ctx.fillRect(sx(p.x + p.w) - 4, sy(pillarTop(p) + (GROUND - pillarTop(p)) / 2) - 4, 8, 8);
-        ctx.fillRect(sx(p.x + p.w / 2) - 4, sy(pillarTop(p)) - 4, 8, 8);
+        ctx.fillRect(sx(p.x + p.w) - 4, sy((objTop(p) + GROUND) / 2) - 4, 8, 8);
+        ctx.fillRect(sx(p.x + p.w / 2) - 4, sy(objTop(p)) - 4, 8, 8);
+      }
+    });
+    // BLOCKS: true rects anywhere. Solid = filled with land-line on top;
+    // SKYBOX = dashed ghost marker (no collision in game — planned opening).
+    doc.blocks.forEach((b, i) => {
+      const on = sel && sel.kind === 'block' && sel.i === i;
+      const top = objTop(b), bot = objBottom(b);
+      if (b.skybox) {
+        ctx.fillStyle = 'rgba(120,220,255,0.07)';
+        ctx.fillRect(sx(b.x), sy(top), b.w * zoom, (bot - top) * zoom);
+        ctx.strokeStyle = on ? '#ffe066' : '#7fd6ff';
+        ctx.lineWidth = 2; ctx.setLineDash([6, 5]);
+        ctx.strokeRect(sx(b.x), sy(top), b.w * zoom, (bot - top) * zoom);
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#7fd6ff'; ctx.font = '10px monospace';
+        ctx.fillText('SKYBOX', sx(b.x) + 4, sy(top) + 12);
+      } else {
+        ctx.fillStyle = on ? '#2f3c66' : '#232c4c';
+        ctx.fillRect(sx(b.x), sy(top), b.w * zoom, (bot - top) * zoom);
+        ctx.strokeStyle = on ? '#ffe066' : '#6f86c8';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(sx(b.x), sy(top), b.w * zoom, (bot - top) * zoom);
+        // landable top = bright line
+        ctx.strokeStyle = '#9db8f0'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(sx(b.x), sy(top)); ctx.lineTo(sx(b.x + b.w), sy(top)); ctx.stroke();
+      }
+      if (on) {
+        ctx.fillStyle = '#ffe066';
+        ctx.fillRect(sx(b.x + b.w) - 4, sy((top + bot) / 2) - 4, 8, 8);
+        ctx.fillRect(sx(b.x + b.w / 2) - 4, sy(top) - 4, 8, 8);
+        ctx.fillRect(sx(b.x + b.w / 2) - 4, sy(bot) - 4, 8, 8);
       }
     });
     // spawn zones
@@ -551,13 +683,21 @@
       ctx.strokeRect(sx(doc.p1x) - 20 * zoom, sy(GROUND) - 92 * zoom, 40 * zoom, 92 * zoom);
       ctx.setLineDash([]);
     }
-    // ghost pillar while dragging
+    // ghost while dragging (pillar = floor column; block = free rect)
     if (ghost && ghost.x1 != null) {
       const a = Math.min(ghost.x0, ghost.x1), b = Math.max(ghost.x0, ghost.x1);
-      ctx.fillStyle = 'rgba(111,134,200,0.3)';
-      ctx.fillRect(sx(a), sy(GROUND - 80), (b - a) * zoom, 80 * zoom);
-      ctx.fillStyle = '#cdd6f4'; ctx.font = '11px monospace';
-      ctx.fillText(Math.round(b - a) + 'w', sx(a) + 4, sy(GROUND - 86));
+      if (ghost.kind === 'block' && ghost.y1 != null) {
+        const t = Math.min(ghost.y0, ghost.y1), bo = Math.max(ghost.y0, ghost.y1);
+        ctx.fillStyle = 'rgba(111,134,200,0.3)';
+        ctx.fillRect(sx(a), sy(t), (b - a) * zoom, (bo - t) * zoom);
+        ctx.fillStyle = '#cdd6f4'; ctx.font = '11px monospace';
+        ctx.fillText(Math.round(b - a) + 'w × ' + Math.round(bo - t) + 'h', sx(a) + 4, sy(t) - 6);
+      } else {
+        ctx.fillStyle = 'rgba(111,134,200,0.3)';
+        ctx.fillRect(sx(a), sy(GROUND - 80), (b - a) * zoom, 80 * zoom);
+        ctx.fillStyle = '#cdd6f4'; ctx.font = '11px monospace';
+        ctx.fillText(Math.round(b - a) + 'w', sx(a) + 4, sy(GROUND - 86));
+      }
     }
     // scale readout
     ctx.fillStyle = '#5b6a94'; ctx.font = '11px monospace';

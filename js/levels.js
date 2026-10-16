@@ -9,18 +9,27 @@
 //   p1x        player start x            respawnX  pit-recovery point
 //   floors     [{x, w}] solid slabs, top at groundY; gaps between them = PITS
 //              (dormant: no shipped level uses gaps — see rooftop note).
-//   pillars    [{x, w, y}] SOLID columns standing ON the floor. Top at height
-//              y above groundY (negative = up); the box from top down to the
-//              floor is SOLID — you bonk into the sides, mooks must hop them,
-//              the top is a landable slab. (User: floating platforms read
-//              wrong — everything stands on the ground now.)
-//   spawns     [{x, count, trigger?, knobs?, pillar?}] mook zones. Without
+//   pillars    LEGACY [{x, w, y}] solid columns standing ON the floor —
+//              kept for old custom maps; the loader folds them into blocks
+//              (h = height, full column to the floor). Draw with BLOCK now.
+//   blocks     [{x, w, y, h}] THE solid primitive: a rect with top at height
+//              -y above ground (y negative = up) and thickness h downward
+//              (bottom = ground + y + h, clamped to the floor). ALL FOUR
+//              faces are solid: top lands you, underside bonks you (roofs!),
+//              sides wall you. Buildings = lintel blocks over doorways +
+//              roof blocks with a GAP between two segments (the gap IS the
+//              skylight — absence of geometry, no special field needed).
+//              skybox:true blocks are EDITOR MARKERS ONLY — no collision,
+//              no LOS/blocking, invisible in game (mark planned openings).
+//              {block:<index>} on a spawn drops the gang ON TOP of it.
+//   spawns     [{x, count, trigger?, knobs?, block?}] mook zones. Without
 //              trigger the zone spawns at load; with trigger it spawns when
 //              P1 passes x. knobs merge into MookAI opts ({hp:24} = elite,
 //              {weapon:'pistol'} = sniper: holds still on his perch, flees
-//              when you close — hunt him down). pillar:<index> pins the zone
-//              to that entry of pillars[] and drops the count mooks ON TOP of
-//              it (x is then unused) — snipers belong up there.
+//              when you close — hunt him down). block:<index> pins the zone
+//              to that entry of blocks[] (or legacy pillars[]) and drops the
+//              count mooks ON TOP of it (x is then unused) — snipers belong
+//              up there.
 window.LEVELS = {
   // The current flat arena as an explicit level.
   dojo: {
@@ -80,6 +89,47 @@ window.LEVELS = {
       { x: 2850, count: 4, trigger: 1900 },
       { x: 0, count: 1, trigger: 1900, knobs: { weapon: 'pistol' }, pillar: 4 }, // sniper on the tall crate
       { x: 0, count: 2, trigger: 900, pillar: 2 },                   // perch guards on the big crate
+    ],
+  },
+  // BREACH: the block-primitive showcase (user brief: "pistol goons shooting
+  // at me from the skylight of a rooftop while I'm inside the building and I
+  // have to fight my way up there"). One building, all blocks: two door
+  // posts (gap = doorway), a raised interior floor (a step up AND hard cover
+  // — the gunners' rays die on its edge), a sealed east wall, and a ROOF in
+  // two segments — the gap between them IS the skylight (absence of
+  // geometry; shots only fall through it, jumping anywhere else bonks on the
+  // underside, 38px of standing headroom under the slabs). Roof top 230 up:
+  // the interior floor's jump apex reaches 222 — you clear the roof ONLY by
+  // launching up through the skylight gap and drifting onto its edge.
+  // Second route: from the east yard hop the wall post (apex clears it by a
+  // hair) and walk the roofline in.
+  breach: {
+    desc: 'Storm the building: gunners rain shots through the skylight. Fight up through it.',
+    width: 1900,
+    sky: [0x0e1322, 0x242a44],
+    p1x: 140, respawnX: 120,
+    floors: [{ x: 0, w: 1900 }],
+    blocks: [
+      // 0,1: door posts (gap 540..620 = the doorway; body 40 fits through).
+      { x: 500,  w: 40,  y: -230, h: 230 },
+      { x: 620,  w: 40,  y: -230, h: 230 },
+      // 2: raised interior floor (60 step; also cover from roof-gun rays).
+      { x: 540,  w: 700, y: -60,  h: 60 },
+      // 3,4: ROOF slabs, 40 thick, top 230 up; the 900..980 gap is the
+      // SKYLIGHT. Underside 190 up: bonk territory everywhere but the gap.
+      { x: 660,  w: 240, y: -230, h: 40 },
+      { x: 980,  w: 340, y: -230, h: 40 },
+      // 5: sealed east wall (230 top = alternate roof entry from the yard).
+      { x: 1240, w: 60,  y: -230, h: 230 },
+      // 6: east yard crate (cover from the roof guns while you plan).
+      { x: 1500, w: 120, y: -150, h: 150 },
+    ],
+    spawns: [
+      { x: 850, count: 3 },                                     // inside, on the raised floor
+      { x: 0, count: 1, trigger: 600, knobs: { weapon: 'pistol' }, block: 3 },  // gunner roof LEFT — pours through the skylight
+      { x: 0, count: 1, trigger: 600, knobs: { weapon: 'pistol' }, block: 4 },  // gunner roof RIGHT
+      { x: 0, count: 2, trigger: 1150, knobs: { hp: 24, aggression: 1.6 }, block: 3 }, // elites come down to meet you
+      { x: 1650, count: 3, trigger: 1330 },                     // east yard when you pass the building
     ],
   },
 };

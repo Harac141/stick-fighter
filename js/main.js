@@ -54,12 +54,29 @@ class FightScene extends Phaser.Scene {
       sky: lv.sky || [0x101423, 0x1b2440],
       p1x: lv.p1x != null ? lv.p1x : 200,
       respawnX: lv.respawnX != null ? lv.respawnX : (lv.p1x != null ? lv.p1x : 160),
-      // floors[] solid slabs (top at groundY, gaps = pits); pillars[] solid
-      // columns standing on the floor (top landable, sides are walls).
+      // floors[] solid slabs (top at groundY, gaps = pits; dormant).
       floors: (lv.floors || []).map((f) => ({ x: f.x, w: f.w })),
-      pillars: (lv.pillars || []).map((p) => ({
-        x: p.x, w: p.w, top: this.groundY + (p.y || 0), bottom: this.groundY,
-      })),
+      // BLOCKS: the one solid primitive. {x, w, y, h} where y = top height
+      // above ground (negative = up) and h = thickness downward; bottom =
+      // groundY + y + h, clamped to the floor. Legacy pillars [{x,w,y}] are
+      // blocks with h = -y (full columns) — old custom maps and ?map= links
+      // keep loading through this conversion. skybox:true blocks are EDITOR
+      // MARKERS ONLY (planned holes/openings): no collision, no LOS/bullet
+      // blocking, not drawn in game.
+      blocks: (lv.pillars || [])
+        .map((p) => ({ x: p.x, w: p.w, y: p.y || 0, h: -(p.y || 0), skybox: false }))
+        .concat((lv.blocks || []).map((b) => ({
+          x: b.x, w: b.w, y: b.y || 0,
+          h: Math.max(30, Number(b.h) || -(b.y || 0)), skybox: !!b.skybox,
+        })))
+        .map((b) => ({
+          x: b.x, w: b.w, skybox: !!b.skybox,
+          top: this.groundY + b.y,
+          bottom: Math.min(this.groundY, this.groundY + b.y + Math.max(30, b.h)),
+        })),
+      // How many blocks[] entries came from legacy pillars[] — spawn.block
+      // indices are RAW blocks[] and get offset by this at zone-build time.
+      legacyPillars: (lv.pillars || []).length,
       spawns: lv.spawns || [],
     };
   }
@@ -74,9 +91,13 @@ class FightScene extends Phaser.Scene {
     return null;
   }
 
-  // Highest SOLID surface at or below footY at x: floor slabs and pillar
-  // tops (both solid). Returns null when over a pit / beside a pillar with
-  // nothing under foot.
+  // The support surface for feet at footY at x: the highest block/floor top
+  // at/below the foot line whose SOLID extent reaches back up to it —
+  // top <= footY <= bottom+40. The old rule ('any top below the feet')
+  // worked because pillars were solid to the floor; with FLOATING blocks it
+  // would spawn a ground mook on the roof over his head and pop corpses up
+  // onto slabs they fell under. A body's feet resting IN the slab band
+  // (top..bottom+40) = supported. Returns null when nothing supports.
   surfaceUnder(x, footY) {
     const lv = this.level;
     let top = null;
@@ -86,33 +107,57 @@ class FightScene extends Phaser.Scene {
       for (const f of lv.floors)
         if (x >= f.x && x <= f.x + f.w && footY >= this.groundY - 0.01)
           top = (top === null) ? this.groundY : Math.max(top, this.groundY);
-      for (const p of lv.pillars)
-        if (x >= p.x && x <= p.x + p.w && footY >= p.top - 0.01)
+      for (const p of lv.blocks)
+        if (!p.skybox && x >= p.x && x <= p.x + p.w
+            && p.top <= footY + 0.01 && p.bottom >= footY - 40)
           top = (top === null) ? p.top : Math.max(top, p.top);
     }
     return top;
   }
 
-  // Which pillar (if any) our body rect is overlapping on its SIDE (not on
-  // top). Returns { p, push } where push is the signed x correction to eject
-  // us, or null. A body counts as "on top" (=> no wall) when its feet are at
-  // or above the pillar top.
-  pillarSide(ctrX, bodyBottom, halfW) {
+  // Least-axis block resolution — THE one solid-collision entry point. Body
+  // rect = ctrX±halfW, headY..feetY. Returns {b, axis, push, wallDir} where
+  // axis is 'x' (push = signed x correction, wallDir = dir we were driving
+  // into), 'up' (eject upward out of a top) or 'down' (CEILING: the body's
+  // head punched into the block's underside — bonk), or null.
+  //
+  // WHY least-axis instead of the old side-only eject: blocks float (roofs,
+  // ledges, catwalks), so a body can intrude from any of four faces. Pushing
+  // out along the smallest penetration is the standard AABB answer and it's
+  // what makes a roof read as a floor from below AND as a ceiling from above
+  // — the thing pillars could never do (user: buildings need undersides).
+  // A body standing ON a top is NOT an intrusion (feet at/above top skips),
+  // and a body fully beneath a block (head below its underside) never is.
+  blockSide(ctrX, headY, feetY, halfW) {
     const lv = this.level;
     if (!lv) return null;
-    for (const p of lv.pillars) {
-      // vertical overlap: must extend meaningfully below the top to be a wall
-      if (bodyBottom <= p.top + 4) continue;
-      if (bodyBottom < p.top) continue;
-      const bx0 = ctrX - halfW, bx1 = ctrX + halfW;
-      if (bx1 <= p.x || bx0 >= p.x + p.w) continue;   // no horizontal overlap
-      // eject to the nearer side
-      const leftPush = p.x - bx1;          // negative: move left to clear left edge
-      const rightPush = (p.x + p.w) - bx0; // positive: move right to clear right edge
-      const push = (ctrX < p.x + p.w / 2) ? (leftPush - 0.5) : (rightPush + 0.5);
-      return { p, push, wallDir: push > 0 ? -1 : 1 };  // wallDir = dir we were moving into
+    const bx0 = ctrX - halfW, bx1 = ctrX + halfW;
+    let best = null;
+    for (const p of lv.blocks) {
+      if (p.skybox) continue;
+      if (bx1 <= p.x || bx0 >= p.x + p.w) continue;        // no x overlap
+      if (feetY <= p.top + 0.01 || headY >= p.bottom - 0.01) continue;  // not intruding
+      const cand = [
+        { axis: 'up', push: feetY - p.top },                       // >0: feet below top
+        { axis: 'down', push: p.bottom - headY },                  // >0: head above bottom
+        { axis: 'x', push: (ctrX < p.x + p.w / 2) ? (p.x - bx1 - 0.5) : (p.x + p.w - bx0 + 0.5) },
+      ].filter((c) => c.push >= 0);
+      if (!cand.length) continue;
+      // A body that CANNOT go down (the floor is under its feet) must not be
+      // pushed down: otherwise resolveGround re-snaps it up and it vibrates.
+      // Skipping that candidate ejects it sideways out of the low ceiling —
+      // a roof with too little headroom reads as a wall at head height.
+      const usable = cand.filter((c) =>
+        !(c.axis === 'down' && feetY + c.push > this.groundY - 2));
+      const pool = usable.length ? usable : cand.filter((c) => c.axis !== 'down');
+      if (!pool.length) continue;
+      let pick = pool[0];
+      for (const c of pool) if (Math.abs(c.push) < Math.abs(pick.push)) pick = c;
+      if (pick.axis === 'x') pick.wallDir = pick.push > 0 ? -1 : 1;
+      pick.b = p;
+      if (!best || Math.abs(pick.push) < Math.abs(best.push)) best = pick;
     }
-    return null;
+    return best;
   }
 
   // One pass per sim tick AFTER the fighter loop (Phaser still integrates
@@ -148,7 +193,8 @@ class FightScene extends Phaser.Scene {
         const lo = Math.min(prev, feet), hi = Math.max(prev, feet);
         const lv = this.level;
         if (lv) {
-          for (const p of lv.pillars) {
+          for (const p of lv.blocks) {
+            if (p.skybox) continue;
             if (x >= p.x - half && x <= p.x + p.w + half
                 && hi >= p.top - 0.01 && lo <= p.top + 0.01
                 && (surf === null || p.top > surf.top)) surf = { top: p.top };
@@ -179,33 +225,49 @@ class FightScene extends Phaser.Scene {
         f._plat = null;
       }
 
-      // Pillar side-walls: solid — eject out of the column and kill velocity
-      // driving into it (only when NOT seated on top; standing bodies skip via
-      // the bodyBottom<=top guard inside pillarSide). Runs even when grounded
-      // so a body-blocked mook leaning into a column stays pinned, not sunk.
+      // Block contact — the four-face resolution (see blockSide). Runs even
+      // when grounded so a body-blocked mook leaning into a wall stays
+      // pinned, not sunk. Three faces:
+      //  'x'    side wall: eject + kill the velocity driving into it.
+      //  'up'   fell into a slab from above (its top is our floor).
+      //  'down' CEILING BONK: the head punched into an underside. Kill the
+      //         rise (vy<0 -> 0) so the jump apexes right there; the body
+      //         then falls. This is what makes a roof a roof.
       // RISING exemption is ONLY for AI vaulting (mook hop / sniper escape)
-      // AND ONLY while actually rising: the climb needs horizontal drive to
-      // survive (eject zeroes vx), but the DESCENT must stay solid or a fast
-      // mook sails straight through the column (user bug). Falling bodies
-      // that didn't clear the top get ejected off the face and land on the
-      // near side — a failed vault bounces off the wall, not through it.
-      // The player is never exempt (user: "the sides don't block me when I'm
-      // jumping").
+      // AND ONLY for the 'x' face while actually rising: the climb needs
+      // horizontal drive to survive (eject zeroes vx), but the DESCENT must
+      // stay solid or a fast mook sails straight through the column (user
+      // bug). Falling bodies that didn't clear the top get ejected off the
+      // face and land on the near side — a failed vault bounces off the wall,
+      // not through it. The player is never exempt (user: "the sides don't
+      // block me when I'm jumping").
       const vaulting = f.ai && f.ai.dec &&
         (f.ai.dec.mode === 'hop' || f.ai.dec.mode === 'vault')
         && !f._grounded && b.enable && b.velocity.y < 0;
-      const side = this.pillarSide(f.sprite.x, f.sprite.y + CFG.body.height / 2, half);
-      if (side) {
-        // The position clamp ALWAYS runs: no body ever ends up inside a
-        // column below its top — rising included (user bug round 2: the old
-        // full exemption let a dashing jumper sail clean through a thin
-        // pillar while still below the top line). Vaulting only spares the
-        // VELOCITY: drive survives, x clamps to the face, so the mook slides
-        // UP the wall face and tops out (drive zeroed every tick could never
-        // reach the top). Everyone else hits the wall dead.
-        f.sprite.x += side.push;
-        if (!vaulting && b.enable && side.wallDir
-            && b.velocity.x * side.wallDir > 0) b.setVelocityX(0);
+      const hit = this.blockSide(f.sprite.x, f.sprite.y - CFG.body.height / 2,
+                                 f.sprite.y + CFG.body.height / 2, half);
+      if (hit) {
+        if (hit.axis === 'x') {
+          // The position clamp ALWAYS runs: no body ever ends up inside a
+          // block below its top — rising included (user bug round 2: the old
+          // full exemption let a dashing jumper sail clean through a thin
+          // pillar while still below the top line). Vaulting only spares the
+          // VELOCITY: drive survives, x clamps to the face, so the mook slides
+          // UP the wall face and tops out (drive zeroed every tick could never
+          // reach the top). Everyone else hits the wall dead.
+          f.sprite.x += hit.push;
+          if (!vaulting && b.enable && hit.wallDir
+              && b.velocity.x * hit.wallDir > 0) b.setVelocityX(0);
+        } else if (hit.axis === 'up') {
+          f.sprite.y -= hit.push + 0.5;
+          if (b.enable && b.velocity.y > 0) b.setVelocityY(0);
+          f._grounded = true; f._plat = hit.b.top;
+          if (!f.dead) f.lastSafeX = f.sprite.x;
+        } else {                                            // ceiling bonk
+          f.sprite.y += hit.push + 0.5;
+          if (b.enable && b.velocity.y < 0) b.setVelocityY(0);
+          f._grounded = false; f._plat = null;
+        }
         b.updateFromGameObject();
       }
 
@@ -231,8 +293,8 @@ class FightScene extends Phaser.Scene {
         if (x >= fl.x && x <= fl.x + fl.w) return { x0: fl.x, x1: fl.x + fl.w };
       return null;
     }
-    for (const p of (lv ? lv.pillars : []))
-      if (p.top === top && x >= p.x && x <= p.x + p.w) return { x0: p.x, x1: p.x + p.w };
+    for (const p of (lv ? lv.blocks : []))
+      if (!p.skybox && p.top === top && x >= p.x && x <= p.x + p.w) return { x0: p.x, x1: p.x + p.w };
     return null;
   }
 
@@ -326,16 +388,20 @@ class FightScene extends Phaser.Scene {
         bg.lineBetween(s.x, this.groundY, s.x, this.groundY + 24);
         bg.lineBetween(s.x + s.w, this.groundY, s.x + s.w, this.groundY + 24);
       }
-      // Pillars: solid columns standing ON the floor — sides are walls, tops
-      // are landable slabs (user: floating platforms read wrong).
-      for (const p of this.level.pillars) {
+      // BLOCKS: solid rects anywhere — columns, ledges, roofs, catwalks.
+      // Sides are walls, the top is a landable slab, the underside is a
+      // ceiling (bonk). skybox markers are editor-only: never drawn in game.
+      for (const p of this.level.blocks) {
+        if (p.skybox) continue;
         bg.fillStyle(0x232c4c, 1);
-        bg.fillRect(p.x, p.top, p.w, this.groundY - p.top);
+        bg.fillRect(p.x, p.top, p.w, p.bottom - p.top);
         bg.lineStyle(3, 0x6f86c8, 1);
         bg.lineBetween(p.x, p.top, p.x + p.w, p.top);        // landable top line
+        bg.lineStyle(1, 0x39456e, 1);
+        bg.lineBetween(p.x, p.bottom, p.x + p.w, p.bottom);  // underside reads as a ceiling
         bg.lineStyle(1.5, 0x39456e, 1);
-        bg.lineBetween(p.x, p.top, p.x, this.groundY);       // side shading
-        bg.lineBetween(p.x + p.w, p.top, p.x + p.w, this.groundY);
+        bg.lineBetween(p.x, p.top, p.x, p.bottom);           // side shading
+        bg.lineBetween(p.x + p.w, p.top, p.x + p.w, p.bottom);
       }
     }
     // Back wall lanes for dojo depth.
@@ -371,7 +437,15 @@ class FightScene extends Phaser.Scene {
       for (const sp of this.level.spawns) {
         const zone = { x: sp.x, count: sp.count || 1, knobs: sp.knobs || {},
                        trigger: sp.trigger != null ? sp.trigger : null,
-                       pillar: sp.pillar != null ? sp.pillar : null, done: false };
+                       // block:<index> drops the gang ON TOP of blocks[]
+                       // (rooftop snipers, ledge guards) — index is into the
+                       // RAW level blocks[], offset past legacy pillars here
+                       // so editor refs survive pillar edits. `pillar` is
+                       // the legacy field indexing legacy pillars.
+                       block: sp.block != null
+                              ? (this.level.legacyPillars || 0) + sp.block
+                              : (sp.pillar != null ? sp.pillar : null),
+                       done: false };
         this.spawnZones.push(zone);
         if (zone.trigger == null) this.fireZone(zone);
       }
@@ -669,16 +743,17 @@ class FightScene extends Phaser.Scene {
     const px = this.p1 ? this.p1.sprite.x : 0;
     for (let i = 0; i < zone.count; i++) {
       let x, surfaceY;
-      if (zone.pillar != null) {
-        // Zone pinned to a pillar: mooks stand ON TOP (snipers, perch guards).
-        const p = this.level.pillars[zone.pillar];
+      if (zone.block != null) {
+        // Zone pinned to a block: mooks stand ON TOP (snipers, perch guards).
+        const p = this.level.blocks[zone.block];
         x = p.x + 24 + (p.w - 48) * (zone.count === 1 ? 0.5 : i / (zone.count - 1))
             + (Math.random() * 10 - 5);
         surfaceY = p.top;
       } else {
         x = Math.max(60, Math.min(this.levelWidth - 60,
           zone.x + i * 56 + (Math.random() * 36 - 18)));
-        // Spawn on whatever solid surface is over that x (floor or a pillar top).
+        // Spawn on whatever solid surface is over that x (floor or a block
+        // top) — a rooftop gang spawns ON the roof, not under it.
         const top = this.surfaceUnder(x, this.groundY);
         surfaceY = (top === null) ? this.groundY : top;
       }
@@ -716,7 +791,8 @@ class FightScene extends Phaser.Scene {
     const lv = this.level;
     if (!lv || !f) return null;
     const feet = f.y + CFG.body.height / 2;
-    for (const p of lv.pillars) {
+    for (const p of lv.blocks) {
+      if (p.skybox) continue;
       if (f.x >= p.x && f.x <= p.x + p.w && Math.abs(feet - p.top) < 6) return p;
     }
     return null;
@@ -774,9 +850,10 @@ class FightScene extends Phaser.Scene {
       // solid from frame 0 (user bug: bullets cut corners through any pillar
       // near the muzzle while the grace blindly covered all of them).
       const lv = this.level;
-      if (lv) for (const p of lv.pillars) {
+      if (lv) for (const p of lv.blocks) {
+        if (p.skybox) continue;                     // marker, not geometry
         if (bl.gracePillar === p && bl.life > 98) continue;
-        if (this.segBox(px0, py0, bl.x, bl.y, p.x, p.x + p.w, p.top, this.groundY)) {
+        if (this.segBox(px0, py0, bl.x, bl.y, p.x, p.x + p.w, p.top, p.bottom)) {
           bl.dead = true;   // sparks: keep for a beat as a impact stub
           break;
         }
@@ -856,7 +933,8 @@ class FightScene extends Phaser.Scene {
         const tOut = Math.min(Math.max(tx0, tx1), Math.max(ty0, ty1));
         if (tOut > 0 && tIn <= tOut && tIn > 0) tMax = Math.min(tMax, tIn);
       };
-      if (lv) for (const p of lv.pillars) clipSlab(p.x, p.x + p.w, p.top, this.groundY);
+      if (lv) for (const p of lv.blocks)
+        if (!p.skybox) clipSlab(p.x, p.x + p.w, p.top, p.bottom);
       clipSlab(-1e9, 1e9, this.groundY + 30, 1e9);           // floor
       clipSlab(-1e9, 4, -1e9, 1e9);                            // left edge
       clipSlab(this.levelWidth - 4, 1e9, -1e9, 1e9);           // right edge

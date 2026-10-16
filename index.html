@@ -115,6 +115,7 @@
         { key: 'dojo', href: '?level=dojo' },
         { key: 'rooftop', href: '?level=rooftop' },
         { key: 'warehouse', href: '?level=warehouse' },
+        { key: 'breach', href: '?level=breach' },
         { key: null, href: '?mooks=0', name: 'FREE DUEL',
           desc: 'The classic flat arena, two players on one keyboard.',
           tags: ['LOCAL VS'], sky: [0x08080c, 0x141420], width: 1280,
@@ -147,6 +148,17 @@
           const h = Math.min(70, Math.max(10, -(p.y || 0) * 0.32));
           pil += '<div class="pil" style="left:' + (p.x / span * 100) + '%;width:'
                + (p.w / span * 100) + '%;height:' + h + 'px"></div>';
+        });
+        // BLOCKS float: the preview box hangs at its TRUE height above the
+        // floor strip (same 0.32 scale as pillars); skybox markers skipped.
+        (lv.blocks || []).forEach((b) => {
+          if (b.skybox) return;                       // editor marker — not stage geometry
+          const topAbove = Math.max(0, -(b.y || 0));  // block top height above ground
+          const botAbove = Math.max(0, Math.min(topAbove,
+            -((b.y || 0) + Math.max(30, Number(b.h) || 30))));  // block bottom height above ground
+          pil += '<div class="pil" style="left:' + (b.x / span * 100) + '%;width:'
+               + (b.w / span * 100) + '%;height:' + Math.max(3, (topAbove - botAbove) * 0.32) + 'px;bottom:'
+               + (14 + botAbove * 0.32) + 'px"></div>';
         });
         const mooks = e.key
           ? (lv.spawns || []).reduce((s, z) => s + (z.count || 1), 0)
