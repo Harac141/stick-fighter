@@ -137,12 +137,19 @@ class FightScene extends Phaser.Scene {
       if (p.skybox) continue;
       if (bx1 <= p.x || bx0 >= p.x + p.w) continue;        // no x overlap
       if (feetY <= p.top + 0.01 || headY >= p.bottom - 0.01) continue;  // not intruding
-      const cand = [
-        { axis: 'up', push: feetY - p.top },                       // >0: feet below top
-        { axis: 'down', push: p.bottom - headY },                  // >0: head above bottom
-        { axis: 'x', push: (ctrX < p.x + p.w / 2) ? (p.x - bx1 - 0.5) : (p.x + p.w - bx0 + 0.5) },
-      ].filter((c) => c.push >= 0);
-      if (!cand.length) continue;
+      // up/down pushes are penetration DEPTHS (naturally >=0 by the intrusion
+      // test); the x push is SIGNED — its sign is the eject direction (left is
+      // negative). The candidate filter must therefore gate up/down by >=0 but
+      // NEVER drop a negative x: doing so dropped every LEFT-face eject, and
+      // the only surviving candidate was 'up' — walking into a wall's left
+      // side launched you onto its top (user: "rockets me up").
+      const cand = [];
+      const upPush = feetY - p.top;                         // >0: feet below top
+      if (upPush >= 0) cand.push({ axis: 'up', push: upPush });
+      const dnPush = p.bottom - headY;                      // >0: head above bottom
+      if (dnPush >= 0) cand.push({ axis: 'down', push: dnPush });
+      cand.push({ axis: 'x',
+        push: (ctrX < p.x + p.w / 2) ? (p.x - bx1 - 0.5) : (p.x + p.w - bx0 + 0.5) });
       // A body that CANNOT go down (the floor is under its feet) must not be
       // pushed down: otherwise resolveGround re-snaps it up and it vibrates.
       // Skipping that candidate ejects it sideways out of the low ceiling —
