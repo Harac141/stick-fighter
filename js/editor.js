@@ -167,8 +167,12 @@
       if (e.button !== 2 && tool === 'select') { sel = null; drawProps(); }
       return;
     }
-    if (tool === 'pillar') { ghost = { kind: 'pillar', x0: snapG(wx(mx)), y0: snapG(wy(mx)) }; return; }
-    if (tool === 'block') { ghost = { kind: 'block', x0: snapG(wx(mx)), y0: snapG(wy(mx)) }; return; }
+    // NB: the y corners MUST read wy(my) — an earlier cut fed wy(mx), so the
+    // block's height tracked the cursor's X and everything you drew near the
+    // left edge clamped to the ground (user: "snaps to the ground and I have
+    // to move it up with the height setting").
+    if (tool === 'pillar') { ghost = { kind: 'pillar', x0: snapG(wx(mx)), y0: snapG(wy(my)) }; return; }
+    if (tool === 'block') { ghost = { kind: 'block', x0: snapG(wx(mx)), y0: snapG(wy(my)) }; return; }
     if (tool === 'erase') {
       const k = pick(mx, my);
       if (!k || k.kind.startsWith('handle')) return;
@@ -200,7 +204,7 @@
       const o = k.kind === 'spawn' ? { x: effX(doc.spawns[k.i]) }
               : k.kind === 'block' ? doc.blocks[k.i] : doc.pillars[k.i];
       moving = { kind: k.kind, i: k.i, grab: wx(mx) - o.x };
-      if (k.kind === 'block') moving.grabY = wy(mx) - objTop(doc.blocks[k.i]);
+      if (k.kind === 'block') moving.grabY = wy(my) - objTop(doc.blocks[k.i]);
       if (k.kind === 'spawn' && (doc.spawns[k.i].block != null || doc.spawns[k.i].pillar != null)) {
         doc.spawns[k.i].block = null; doc.spawns[k.i].pillar = null;  // unpinned drag follows x
       }
@@ -211,7 +215,7 @@
     const mx = (e.clientX - r.left) * (CW / r.width);
     const my = (e.clientY - r.top) * (CH / r.height);
     if (panning) { camX = panning.camX0 - ((e.clientX - r.left) - panning.mx0) * (CW / r.width) / zoom; return; }
-    if (ghost) { ghost.x1 = snapG(wx(mx)); ghost.y1 = snapG(wy(mx)); return; }
+    if (ghost) { ghost.x1 = snapG(wx(mx)); ghost.y1 = snapG(wy(my)); return; }
     if (!moving) return;
     const W = Number(widthEl.value) || doc.width;
     if (moving.kind === 'p1') {
@@ -221,19 +225,22 @@
       o.w = Math.max(40, Math.min(1200, snapG(wx(mx) - o.x)));
     } else if (moving.kind === 'handle-h') {
       const o = moving.selKind === 'block' ? doc.blocks[moving.i] : doc.pillars[moving.i];
-      const top = Math.max(-560, Math.min(-30, snapG(wy(mx) - GROUND)));
+      const top = Math.max(-560, Math.min(-30, snapG(wy(my) - GROUND)));
       if (moving.selKind === 'block') { const bot = objBottom(o); o.y = top; o.h = Math.max(30, bot - (GROUND + top)); }
       else o.y = top;
     } else if (moving.kind === 'handle-thick') {
       const o = doc.blocks[moving.i];
-      const bot = Math.max(objTop(o) + 30, Math.min(GROUND, snapG(wy(mx))));
+      const bot = Math.max(objTop(o) + 30, Math.min(GROUND, snapG(wy(my))));
       o.h = Math.max(30, bot - objTop(o));
     } else if (moving.kind === 'block') {
       const o = doc.blocks[moving.i];
       o.x = Math.max(0, Math.min(W - o.w, snapG(wx(mx) - moving.grab)));
       // Free 2D placement — that's the whole point of blocks vs pillars.
       // The bottom rides along (thickness preserved); props re-clamp.
-      const top = Math.max(-560, Math.min(0, snapG(wy(mx) - moving.grabY)));
+      // NB: wy() returns WORLD y (ground = 620), but o.y is height-above-ground
+      // (negative) — subtract GROUND or every drag clamps the block into the
+      // floor (user: "if I don't [raise it] it'll stay stuck in the ground").
+      const top = Math.max(-560, Math.min(0, snapG(wy(my) - GROUND - moving.grabY)));
       o.h = Math.max(30, Math.min(560, objBottom(o) - (GROUND + top)));
       o.y = top;
     } else if (moving.kind === 'pillar') {
@@ -248,11 +255,14 @@
       const a = Math.min(ghost.x0, ghost.x1), b = Math.max(ghost.x0, ghost.x1);
       if (ghost.kind === 'block' && ghost.y1 != null) {
         // Roof/ledge/crate: any rect, both axes snapped to the 10px grid.
+        // Ghost corners are WORLD y (ground=620); the doc field is height above
+        // ground (negative) — the old code stored the raw world y clamped to 0,
+        // so EVERY dragged block landed at/below the floor line.
         const t = Math.min(ghost.y0, ghost.y1), bo = Math.max(ghost.y0, ghost.y1);
         if (b - a >= 40 && bo - t >= 30) {
           snap();
-          const y = Math.max(-560, Math.min(0, t));               // top height above ground (neg)
-          const h = Math.max(30, Math.min(560, bo - t));          // thickness downward
+          const y = Math.max(-560, Math.min(0, t - GROUND));        // top height above ground (neg)
+          const h = Math.max(30, Math.min(560, bo - t));            // thickness downward
           doc.blocks.push({ x: Math.max(0, a), w: b - a, y, h });
           sel = { kind: 'block', i: doc.blocks.length - 1 };
           drawProps();
