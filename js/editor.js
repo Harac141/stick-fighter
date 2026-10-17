@@ -235,14 +235,16 @@
     } else if (moving.kind === 'block') {
       const o = doc.blocks[moving.i];
       o.x = Math.max(0, Math.min(W - o.w, snapG(wx(mx) - moving.grab)));
-      // Free 2D placement — that's the whole point of blocks vs pillars.
-      // The bottom rides along (thickness preserved); props re-clamp.
-      // NB: wy() returns WORLD y (ground = 620), but o.y is height-above-ground
-      // (negative) — subtract GROUND or every drag clamps the block into the
-      // floor (user: "if I don't [raise it] it'll stay stuck in the ground").
-      const top = Math.max(-560, Math.min(0, snapG(wy(my) - GROUND - moving.grabY)));
-      o.h = Math.max(30, Math.min(560, objBottom(o) - (GROUND + top)));
-      o.y = top;
+      // Whole-body translate: TOP AND BOTTOM ride together, thickness constant.
+      // (user: dragging the middle "only grabs the top part, the bottom stays
+      // where it is" — the old line re-derived h from the OLD bottom, so a
+      // body drag silently behaved like the top/height handle.) wy() returns
+      // WORLD y (ground=620) but doc y = height above ground (negative):
+      // subtract GROUND. Clamp the block to rest ON the ground, never through
+      // it: bottom <= 620 means top >= -h in doc space.
+      const h = Math.max(30, Math.min(560, Number(o.h) || 30));
+      const top = Math.max(-560, Math.min(-h, snapG(wy(my) - GROUND - moving.grabY)));
+      o.y = top; o.h = h;
     } else if (moving.kind === 'pillar') {
       const o = doc.pillars[moving.i];
       o.x = Math.max(0, Math.min(W - o.w, snapG(wx(mx) - moving.grab)));
