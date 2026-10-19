@@ -108,11 +108,11 @@ const CFG = {
       cooldown: 22,
     },
     heavy: {
-      startup: 9, active: 5, recovery: 20,
-      damage: 14, lunge: 600,
-      box:   { x: 30, y: 4, w: 58, h: 26 },
-      knock: { x: 520, y: -360, hitstun: 26 },
-      cooldown: 14,
+      startup: 9, active: 5, recovery: 14,       // (user: "turn down the recovery
+      damage: 14, lunge: 600,                     // time after the neutral heavy
+      box:   { x: 30, y: 4, w: 58, h: 26 },       // punch a bit") — was 20; the
+      knock: { x: 520, y: -360, hitstun: 26 },    // post-attack cooldown:14 stays,
+      cooldown: 14,                               // so whiff punish window ~10f shorter
     },
     // ---- KATANA starter character (user: "a character with a sword", just
     // neutral light + heavy, both block bullets). Neutral-only: selectAttack
