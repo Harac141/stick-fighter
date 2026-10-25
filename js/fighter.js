@@ -1339,9 +1339,14 @@ class Fighter {
       y: cur[k].y + (target[k].y - cur[k].y) * rate,
     };
 
-    // Keep hips above feet sanity: never let the blended hip sink below feet.
-    const minY = Math.min(blended.footA.y, blended.footB.y);
-    if (blended.hip.y > minY - 20) blended.hip.y = minY - 20;
+    // Keep hips above the STANDING foot: never let the blended hip sink below
+    // the lowest foot. NB: this used to clamp against the HIGHEST foot — that
+    // forbade any foot rising above the hip, so during the cartwheel kick the
+    // hip TELEPORTED up to stay over the kick foot and the shins detached from
+    // their knees (user: "the up-heavy does something really wacky with the
+    // legs"). A kick legitimately puts a foot above the hip.
+    const maxY = Math.max(blended.footA.y, blended.footB.y);
+    if (blended.hip.y > maxY - 20) blended.hip.y = maxY - 20;
 
     // Re-solve knees from (hip, blended foot) so legs stay rigid; pick the
     // IK side nearest the previous knee for continuity.
@@ -1473,11 +1478,20 @@ class Fighter {
         if (atk.pose === 'upper') {          // rising fist, body extends up
           lean = act ? -0.12 : -0.02;
           footF = P(f * 10, feetY - (act ? 12 : 2)); footB = P(-f * 16, feetY - (act ? 4 : 0));
-        } else if (atk.pose === 'cartwheel') {  // kick over the head, legs scissor
-          lean = act ? 0.5 : -0.05;
+        } else if (atk.pose === 'cartwheel') {  // BOTH legs whip over the head (Kirby up-smash)
+          // (user: "the up-heavy does something really wacky with the legs")
+          // Old targets were the bug: footF rose only ~50px (knee height, while
+          // the hitbox floats at HEAD height) and footB drove its KNEE above
+          // the hip — an impossible knee mid-move. Now the kick arc reaches
+          // over the head and the trail leg tucks under the body, so no foot
+          // ever sits high enough to flip the knee solver. Render-only: the
+          // hitbox (box/knock) is untouched (animation-never-touches-hitboxes).
           const k = act ? (fr - atk.startup) / Math.max(1, atk.active) : 0;
-          footF = P(f * (10 + 34 * k), feetY - (act ? 20 + 30 * Math.sin(Math.PI * k) : 2));
-          footB = P(-f * (18 - 30 * (act ? k : 0)), feetY - (act ? 8 + 26 * k : 0));
+          const arc = Math.sin(Math.PI * k);                     // 0 -> 1 -> 0
+          lean = act ? 0.2 + 0.3 * arc : -0.05;                  // whip forward, snap back
+          hipY = feetY - (act ? 40 + 10 * arc : 40);             // compress into the kick
+          footF = P(f * (8 + 26 * k), feetY - (act ? 8 + 88 * arc : 2));   // floor -> over head -> floor
+          footB = P(-f * (14 - 22 * k), feetY - (act ? 6 + 18 * arc : 0)); // tuck under, never floats
         } else if (atk.pose === 'sweep') {      // deep crouch, leg extended low
           lean = 0.28; hipY = feetY - 30;
           footF = P(f * (act ? 40 : 16), feetY - (act ? 3 : 0)); footB = P(-f * 12, feetY);
