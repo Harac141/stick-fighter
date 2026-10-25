@@ -381,7 +381,16 @@ class Fighter {
     const heavyPressed = !!input.heavy && !this._heavyHeld;
     this._heavyHeld = !!input.heavy;
     if (!this.ai) {
-      if (heavyPressed && (this.hitstun > 0 || this.currentAttack || this.attackCooldown > 0)) {
+      // DOUBLE-PRESS GUARD (user: "sometimes I do a neutral heavy and
+      // accidentally double-press the button and it locks me into doing it
+      // twice in a row"). Buffering only begins once the current move has
+      // REACHED its damaging (hitbox-out) phase — _hitOut mirrors tickAttack's
+      // publish rules exactly. An accidental second tap during startup dies
+      // instead of chaining a whole second attack; a deliberate press timed
+      // after the hitbox comes out still buffers (walk-in + bullet-time feel
+      // kept). Hitstun/tax presses are unaffected: no current attack to gate.
+      if (heavyPressed && this._hitOut()
+          && (this.hitstun > 0 || this.currentAttack || this.attackCooldown > 0)) {
         this.heavyQueued = 40;
         // Remember the W/S modifier at PRESS time — selectAttack at fire
         // time must see the chord the player actually used (W+K=uppercutH).
@@ -619,6 +628,24 @@ class Fighter {
 
   // ---- Attacks ----
   canStartAttack() { return !this.currentAttack; }
+
+  // Has the CURRENT attack reached its damaging (hitbox-out) phase? Mirrors
+  // tickAttack's publish rules exactly: plain = frames (startup, startup+active];
+  // multi-hit = the first hitFrames window opens; gun = the fire frame. The
+  // heavy buffer consults this so a button DOUBLE-TAP in startup — before the
+  // move has "hit" — is dropped instead of chaining a second attack (user:
+  // "I accidentally double-press and it locks me into doing it twice"). A
+  // press timed after the hitbox comes out still buffers (fighting-game
+  // input-buffer feel, and the bullet-time walk-in fix, stay intact).
+  _hitOut() {
+    if (!this.currentAttack) return true;   // nothing running: not gated
+    const atk = CFG.attacks[this.currentAttack];
+    if (!atk) return true;
+    const firstHit = atk.hitFrames ? Math.min(...atk.hitFrames)
+                   : atk.fire ? (atk.aimLock || atk.startup) + 1
+                   : atk.startup + 1;
+    return this.attackFrame >= firstHit;
+  }
 
   // Context picker: two attack buttons x stance = whole moveset (Smash/Kirby
   // grammar). W/S are attack-DIRECTION modifiers, not movement (jump = SPACE).
