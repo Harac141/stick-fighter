@@ -1103,9 +1103,21 @@ class FightScene extends Phaser.Scene {
     const fs = this.fighters;
     const intent = (f) => (f.inputKey && this.lastIn[f.inputKey]) || (f.aiIn) || {};
     const MOVE_EPS = 40;   // |vx| below this reads as "not really moving"
+    // User: "when enemies are in a group, one at the back tries to run at me
+    // but can't go forward and has to wait until everyone decides to go."
+    // A STANDING-STILL mook (no real vx AND no press-intent: queued mobs
+    // waiting their slot, circling ring-keepers, the stationary gunner) is no
+    // longer a wall — the mook driving at you phases right through the pack.
+    // A body actively LEANING (heldDir set: closing, fleeing, vaulting) still
+    // blocks: the pinned-shoulder texture of a press stays. And TWO still
+    // bodies still separate each other — if idles phased through idles the
+    // waiting pack would drift into one overlapping blob (verified both).
+    const still = (f) => Math.abs(f.body.velocity.x) <= MOVE_EPS && !intent(f).heldDir;
     const solid = (A, B) => {
       if (A.inputKey || B.inputKey) return true;            // any player pair: always solid
       if (A.hitstun > 0 || B.hitstun > 0) return false;     // mid-knockback: phase through
+      const sa0 = still(A), sb0 = still(B);
+      if (sa0 || sb0) return sa0 && sb0;                    // mover vs still: PHASE; still+still: solid
       const va = A.body.velocity.x, vb = B.body.velocity.x;
       const sa = Math.abs(va) > MOVE_EPS ? Math.sign(va) : 0;
       const sb = Math.abs(vb) > MOVE_EPS ? Math.sign(vb) : 0;
