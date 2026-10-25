@@ -2,7 +2,7 @@
 //
 // Controls (P1 single player): A/D move, Space jump, Shift dash,
 //   J punch, K heavy; W/S are attack-direction modifiers:
-//   W+J uppercut, W+K cartwheel, S+J sweep, S+K hammerfist;
+//   W+J uppercut, W+K uppercutH (heavy launcher), S+J sweep, S+K hammerfist;
 //   in air: J air jab, K axe kick; during dash: J/K shoulder check.
 // P2 (duel demo): Arrows move/jump, / dash, , (comma) jab, . (period) heavy.
 // F1: toggle hitbox/hurtbox debug view.
@@ -597,7 +597,7 @@ class FightScene extends Phaser.Scene {
     inp.right = k.right.isDown;
     inp.jumpHeld = k.jump.isDown;
     inp.down = !!k.down && k.down.isDown;   // DOWN modifier (sweep/hammerfist)
-    inp.up   = !!k.up   && k.up.isDown;      // UP modifier (uppercut/cartwheel)
+    inp.up   = !!k.up   && k.up.isDown;      // UP modifier (uppercut/heavy-uppercut)
     // One-shot states consumed from buffer.
     inp.jump = b.jump > 0 || (k.jump.isDown && !this['prevJump_' + who]);
     this['prevJump_' + who] = k.jump.isDown;

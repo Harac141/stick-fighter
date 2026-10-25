@@ -77,7 +77,7 @@ const CFG = {
     // window links jab1 -> jab2 (the tight pop-pop). The string has no third
     // link: instead, K (or W+K / S+K...) CANCELS out of jab2 into any heavy —
     // the finisher is the player's choice, and the whole heavy catalog
-    // (heavy / cartwheel / hammerfist) becomes the combo's variety. Chain
+    // (heavy / uppercutH / hammerfist) becomes the combo's variety. Chain
     // state lives on the Fighter (chainStep/chainT), advanced in startAttack.
     jab: {                                      // AI free-poke (MookAI pulses
       startup: 2, active: 3, recovery: 5,       // inp.jab) — kept at the old
@@ -151,10 +151,14 @@ const CFG = {
       knock: { x: 120, y: -600, hitstun: 22 },  // launcher: pops straight up
       cooldown: 8,
     },
-    cartwheel: {                                // K while rising (Kirby up-smash)
+    uppercutH: {                                // K while rising (HEAVY uppercut launcher)
+      // (user: "redo the animation and make it a heavy uppercut") — was a
+      // scissor-kick 'cartwheel'; REDRAWN ONLY. Frames/hitbox/damage/knock/
+      // hitFrames are byte-identical to the old cartwheel so balance and the
+      // hitFrames tick-then-pop are untouched (animation-never-touches-hitboxes).
       startup: 4, active: 10, recovery: 12,
-      damage: 5, pose: 'cartwheel', air: true,   // scripted legs: the kick IS the pose
-      hitFrames: [6, 10],                       // two hits: tick, then pop
+      damage: 5, pose: 'upperH', air: true,      // air:true = scripted legs
+      hitFrames: [6, 10],                       // two hits: fist clips, then pops
       box:   { x: 12, y: -30, w: 60, h: 62 },   // generous arc
       knock: { x: 240, y: -560, hitstun: 18 },
       cooldown: 12,
@@ -380,7 +384,7 @@ class Fighter {
       if (heavyPressed && (this.hitstun > 0 || this.currentAttack || this.attackCooldown > 0)) {
         this.heavyQueued = 40;
         // Remember the W/S modifier at PRESS time — selectAttack at fire
-        // time must see the chord the player actually used (W+K=cartwheel).
+        // time must see the chord the player actually used (W+K=uppercutH).
         this._heavyMod = input.up ? 'up' : (input.down ? 'down' : null);
       }
       if (this.heavyQueued > 0) this.heavyQueued--;
@@ -453,7 +457,7 @@ class Fighter {
       const cur = this.currentAttack && CFG.attacks[this.currentAttack];
       // HEAVY CANCEL (user: J-J-K): from mid-active of pop 2, any heavy —
       // K plain, or W+K / S+K variants — interrupts the string. The finisher
-      // is the PLAYER's choice: heavy / cartwheel / hammerfist all become the
+      // is the PLAYER's choice: heavy / uppercutH / hammerfist all become the
       // combo's payoff, and momentum (lunge) carries into the cancel.
       if (cur && cur.cancelFrom != null && !this.ai && !this.airborne
           && this.attackFrame >= cur.cancelFrom && input.heavy) {
@@ -619,7 +623,7 @@ class Fighter {
   // Context picker: two attack buttons x stance = whole moveset (Smash/Kirby
   // grammar). W/S are attack-DIRECTION modifiers, not movement (jump = SPACE).
   //   grounded J/K          -> jab / heavy
-  //   grounded W+J/K        -> uppercut / cartwheel (launchers; work from run too)
+  //   grounded W+J/K        -> uppercut / uppercutH (launchers; work from run too)
   //   grounded S+J/K        -> sweep / hammerfist
   //   air J                 -> airjab   (small, keeps float)
   //   air K (or W+K)        -> axekick  (forward-down heel chop, meteor on grounded)
@@ -640,11 +644,11 @@ class Fighter {
     if (this.airborne) {
       // W is the ONLY up-indicator (no jump-timing guesswork — that was the
       // untimable "rising" heuristic). air K always = axe kick.
-      if (input.up) return H ? 'cartwheel' : 'uppercut';
+      if (input.up) return H ? 'uppercutH' : 'uppercut';
       if (H) return 'axekick';
       return 'airjab';
     }
-    if (input.up) return H ? 'cartwheel' : 'uppercut';   // up+attack = launcher, no jump needed
+    if (input.up) return H ? 'uppercutH' : 'uppercut';   // up+attack = launcher, no jump needed
     if (input.down) return H ? 'hammerfist' : 'sweep';   // (also works from run)
     if (H) return 'heavy';
     if (this.ai) return 'jab';              // mob free-poke: old numbers, no chain
@@ -727,7 +731,7 @@ class Fighter {
 
     // Publish a hitbox only during active frames (and only until it lands).
     // Multi-hit (hitFrames = [f1, f2]): each frame opens a fresh 2-frame
-    // window with its own hit-landed flag — the cartwheel's tick-then-pop.
+    // window with its own hit-landed flag — the uppercutH's tick-then-pop.
     this.hitboxes.length = 0;
     // Sword guard: the blade is "up" for the entire wind-up AND active
     // window, so a katana blocks bullets on reaction (frames 0..active), not
@@ -853,7 +857,7 @@ class Fighter {
     // blow's launch, capped to the jump-speed scale so nothing leaves the sky.
     if (this.onGround) v.y = Math.max(CFG.jump.velocity, Math.min(v.y, 0) - (140 + Math.random() * 90));
     // Remember the LAUNCH vertical velocity — ragStep's lie-down lean reads it
-    // so a corpse killed going UP (uppercut/cartwheel) topples backward and one
+    // so a corpse killed going UP (uppercut/uppercutH) topples backward and one
     // killed going DOWN (axe kick/meteor) crumples forward (user: "different for
     // each move"). Captured before the body is disabled.
     const vy0 = v.y;
@@ -1478,20 +1482,24 @@ class Fighter {
         if (atk.pose === 'upper') {          // rising fist, body extends up
           lean = act ? -0.12 : -0.02;
           footF = P(f * 10, feetY - (act ? 12 : 2)); footB = P(-f * 16, feetY - (act ? 4 : 0));
-        } else if (atk.pose === 'cartwheel') {  // BOTH legs whip over the head (Kirby up-smash)
-          // (user: "the up-heavy does something really wacky with the legs")
-          // Old targets were the bug: footF rose only ~50px (knee height, while
-          // the hitbox floats at HEAD height) and footB drove its KNEE above
-          // the hip — an impossible knee mid-move. Now the kick arc reaches
-          // over the head and the trail leg tucks under the body, so no foot
-          // ever sits high enough to flip the knee solver. Render-only: the
-          // hitbox (box/knock) is untouched (animation-never-touches-hitboxes).
-          const k = act ? (fr - atk.startup) / Math.max(1, atk.active) : 0;
-          const arc = Math.sin(Math.PI * k);                     // 0 -> 1 -> 0
-          lean = act ? 0.2 + 0.3 * arc : -0.05;                  // whip forward, snap back
-          hipY = feetY - (act ? 40 + 10 * arc : 40);             // compress into the kick
-          footF = P(f * (8 + 26 * k), feetY - (act ? 8 + 88 * arc : 2));   // floor -> over head -> floor
-          footB = P(-f * (14 - 22 * k), feetY - (act ? 6 + 18 * arc : 0)); // tuck under, never floats
+        } else if (atk.pose === 'upperH') {  // HEAVY uppercut (user redraw request;
+          // was the 'cartwheel' scissor-kick): SINK-then-DRIVE. Coil deep on
+          // startup, then the whole body rockets through the fist. Both feet
+          // stay below the hip — no foot-above-hip = can't re-trigger the knee
+          // flip that plagued the kick (see blendPose hip-clamp note).
+          if (fr <= atk.startup) {
+            lean = 0.12; hipY = feetY - 32;                  // coil: load the legs
+            footF = P(f * 18, feetY); footB = P(-f * 18, feetY);
+          } else if (act) {
+            const ka = (fr - atk.startup) / Math.max(1, atk.active);
+            lean = -0.16; hipY = feetY - (36 + 12 * ka);     // drive up, pitch back
+            footF = P(f * 20, feetY - 2);                     // planted, on the ball
+            footB = P(-f * (16 - 6 * ka), feetY - (6 + 10 * ka)); // trail pushes onto toe
+          } else {
+            const kk = Math.min(1, (fr - atk.startup - atk.active) / Math.max(1, atk.recovery * 0.6));
+            lean = -0.16 + 0.16 * kk; hipY = feetY - (48 - 8 * kk);  // settle
+            footF = P(f * (20 - 6 * kk), feetY); footB = P(-f * 10, feetY - (16 - 14 * kk));
+          }
         } else if (atk.pose === 'sweep') {      // deep crouch, leg extended low
           lean = 0.28; hipY = feetY - 30;
           footF = P(f * (act ? 40 : 16), feetY - (act ? 3 : 0)); footB = P(-f * 12, feetY);
@@ -1647,9 +1655,17 @@ class Fighter {
         if (act) { uArmF += 8; fArmF += 8;
           handF = P(f * 22, feetY - 92); handB = P(-f * 8, feetY - 62); }
         else { handF = P(f * 4, feetY - 56); handB = P(-f * 10, feetY - 64); }
-      } else if (atk.pose === 'cartwheel') {      // arms down for the kick axis
-        if (act) { handF = P(f * 16, feetY - 46); handB = P(-f * 18, feetY - 44); }
-        else { handF = P(f * 6, feetY - 58); handB = P(-f * 12, feetY - 58); }
+      } else if (atk.pose === 'upperH') {       // HEAVY uppercut fist: loads LOW behind
+        if (fr <= atk.startup) {                // the hip (coil), then EXPLODES past the
+          handF = P(f * 6, feetY - 52); handB = P(-f * 16, feetY - 40);   // crown. Longer
+        } else if (act) {                       // extension + big arm-lengthen vs the
+          uArmF += 10; fArmF += 10;             // light 'upper' flick — reads as HEAVY.
+          const ka = (fr - atk.startup) / Math.max(1, atk.active);
+          handF = P(f * (14 + 8 * ka), feetY - (70 + 30 * ka));           // fist past crown (92)
+          handB = P(-f * 10, feetY - 60);                                  // guard hand holds
+        } else {
+          handF = P(f * 10, feetY - 62); handB = P(-f * 12, feetY - 60);
+        }
       } else if (atk.pose === 'sweep') {          // hand sweeps the floor line
         if (act) { handF = P(f * 34, feetY - 16); handB = P(f * 4, feetY - 58); }
         else { handF = P(f * 6, feetY - 40); handB = P(-f * 8, feetY - 60); }
