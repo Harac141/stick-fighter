@@ -1046,7 +1046,11 @@ class FightScene extends Phaser.Scene {
       kind: 'swipe', energy, dir, type,
       x: cx, y: midY, rIn, rOut, spread,
       ux, uy,
-      hw: Math.max(7, Math.min(hb.h, 30) * 0.45),        // streak half-thickness
+      // STREAK shapes ride the weapon limb (fist/heel) each render frame —
+      // presentation-side read of renderPose, physics never sees it (user:
+      // "have it track with the fist on jabs and heavies"). Falls back to
+      // the static hitbox anchor if the limb is gone (attacker KO'd mid-swing).
+      src: (type === 'arc') ? null : attacker,
       t: 0, life: energy ? 9 : 6,                        // energy arcs linger a touch
     });
   }
@@ -1098,26 +1102,30 @@ class FightScene extends Phaser.Scene {
         const base = e.dir > 0 ? 0 : Math.PI;             // crescent centred on facing
         const steps = 14;
         if (e.type !== 'arc') {
-          // STREAK along the unit direction of travel (e.ux/e.uy): manga speed
-          // lines that EXTEND outward from the pivot. thrust = horizontal
-          // (jabs/straights/shoulder check), rising = diagonal up (launchers),
-          // chop = diagonal down-forward (axekick meteor).
+          // ONE clean tapered streak riding the weapon limb (user: kill the
+          // lumps — the offset side-lines became stubs; track the fist on
+          // jabs/heavies). Anchor = live renderPose hand (heel for chops),
+          // re-read every render frame; static hitbox anchor only if the
+          // limb is gone (attacker KO'd mid-swing).
           const grow = Math.min(1, 0.45 + k * 1.3);
-          const len = e.rOut * grow;
-          const px = -e.uy * e.dir, py = e.ux * e.dir;    // perpendicular offset axis
-          const s0 = e.rIn * 0.35;
-          const lines = [[0, 1], [-e.hw * 1.15, 0.5], [e.hw * 1.15, 0.5]];
-          for (const [off, wm] of lines) {
-            const ox = px * off, oy = py * off;
-            g.lineStyle((e.energy ? 7 : 6) * wm, glow, 0.5 * fade * wm);   // bloom
-            g.lineBetween(e.x + e.ux * s0 + ox, e.y + e.uy * s0 + oy,
-                          e.x + e.ux * len + ox, e.y + e.uy * len + oy);
-            g.lineStyle((e.energy ? 3.5 : 3) * wm, col, 0.95 * fade * wm); // core
-            g.lineBetween(e.x + e.ux * s0 + ox, e.y + e.uy * s0 + oy,
-                          e.x + e.ux * len + ox, e.y + e.uy * len + oy);
+          let ax = e.x, ay = e.y;
+          const s = e.src;
+          if (s && s.renderPose && !s.gone) {
+            const limb = e.type === 'chop' ? s.renderPose.footB : s.renderPose.handB;
+            if (limb) { ax = limb.x; ay = limb.y; }
           }
-          g.fillStyle(col, fade);
-          g.fillCircle(e.x + e.ux * len, e.y + e.uy * len, e.energy ? 5 : 4); // hot tip
+          const len = (e.rOut - e.rIn) * grow + 10;
+          const tailx = ax - e.ux * len, taily = ay - e.uy * len;
+          const tipx = ax + e.ux * 8, tipy = ay + e.uy * 8;   // lead past the knuckle
+          g.lineStyle(e.energy ? 8 : 7, glow, 0.35 * fade);   // soft bloom underlay
+          g.lineBetween(tailx, taily, tipx, tipy);
+          const SEGS = 5, wMax = e.energy ? 5 : 4.5;          // thin tail -> thick tip
+          for (let i = 0; i < SEGS; i++) {
+            const f0 = i / SEGS, f1 = (i + 1) / SEGS;
+            g.lineStyle(1 + (wMax - 1) * f1, col, 0.95 * fade);
+            g.lineBetween(tailx + (tipx - tailx) * f0, taily + (tipy - taily) * f0,
+                          tailx + (tipx - tailx) * f1, taily + (tipy - taily) * f1);
+          }
         } else {
         // FILLED crescent: triangle strip between inner and outer radii —
         // a body of colour, then a bright core stroke down the middle.
