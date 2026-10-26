@@ -1008,7 +1008,7 @@ class FightScene extends Phaser.Scene {
     this.lastIn = { p1: i1, p2: i2 };   // press-intent for separateBodies
     for (const f of this.fighters) this.stepFighter(f, f.inputKey === 'p2' ? i2 : i1, gate);
     if (st) st.tick();
-    if (this.loadout) this.loadout.tick();   // regen + FURY clock (gate 1 always in base mode)
+    if (this.loadout) this.loadout.tick();   // FURY clock (energy is combat-earned only)
     if (this.eng && gate === 1) this.eng.tick();   // handoff cooldown pace
     if (gate === 1) this.checkTriggers();          // progress-gated spawn zones (levels)
     this.resolveHits();

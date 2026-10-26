@@ -29,7 +29,8 @@
 const LOADOUT_T = {
   energyMax: 100,
   energyStart: 60,
-  energyRegen: 3,       // per second (hoard cap punishes hoarding, style law)
+  // NO time-based regen (user: "I want avoiding engagement to be
+  // disadvantageous") — energy is earned ONLY by landing hits and kills.
   energyPerHit: 2,      // player attack lands
   energyPerKill: 12,
   buffCost: 25,         // FURY activation
@@ -61,7 +62,6 @@ class LoadoutManager {
   constructor(scene) {
     this.scene = scene;
     this.energy = LOADOUT_T.energyStart;
-    this._acc = 0;                    // fractional regen/drain accumulator
     this.buffT = 0;                   // FURY frames remaining
     this.open = false;
     this.flash = ''; this.flashT = 0; // e.g. 'LOW ENERGY' blip
@@ -125,8 +125,6 @@ class LoadoutManager {
 
   tick() {
     const T = LOADOUT_T;
-    this._acc += 1 / 60;
-    if (this._acc >= 1) { this._acc -= 1; this.energy = Math.min(T.energyMax, this.energy + T.energyRegen); }
     if (this.buffT > 0) {
       this.buffT--;
       this.energy = Math.max(0, this.energy - T.buffDrain / 60);
