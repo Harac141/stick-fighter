@@ -41,7 +41,7 @@ function ik2(rx, ry, tx, ty, l1, l2, kind, facing) {
 // ---- Tunables ---------------------------------------------------------------
 const CFG = {
   gravity: 1900,
-  run:      { accel: 3000, turnDecel: 2600, maxSpeed: 250, friction: 500 },  // friction = release skid (tuned; was slider-bound during dev)
+  run:      { accel: 3000, turnDecel: 2600, maxSpeed: 250, friction: 500, attackDrift: 110 },  // friction = release skid (tuned; was slider-bound during dev); attackDrift = shuffle cap during grounded attacks (user: 'move a little during moves')
   air:      { accel: 1400, maxSpeed: 260 },
   jump:     { velocity: -920, cutMultiplier: 0.55 },   // variable jump height (v3: -640=108px apex couldn't clear platforms; -920 = ~223px full clears the 200px crates, ~85px tap hop)
   dash:     { burstSpeed: 560, burstFrames: 10, sprintSpeed: 450, cooldown: 26 },
@@ -494,6 +494,28 @@ class Fighter {
       }
       this.tickAttack();
       // No lockX: existing momentum carries through the attack.
+      // ATTACK DRIVE (user: 'move a little during moves, especially the
+      // neutral heavy — it goes on so long'): grounded players shuffle at a
+      // fraction of run speed while the attack plays. FACING NEVER FLIPS
+      // mid-swing — the hitbox publishes off this.facing, a flip would
+      // teleport the active box to the other side. Pressing WITH the lunge
+      // coasts (never engine-brakes it, momentum/lunge slides preserved);
+      // pressing against it shuffles down to the drift cap (retreat-step a
+      // whiffed heavy). NO friction here when idle — pre-patch coasting
+      // through the whole attack is load-bearing (the lunge slide).
+      if (!this.airborne && !this.ai) {
+        const drift = CFG.run.attackDrift;
+        let d = 0;
+        if (input.left) d = -1;
+        if (input.right) d = +1;
+        if (wall && d === wallDir) { this.body.setVelocityX(0); d = 0; }
+        const v = this.body.velocity.x;
+        if (d !== 0 && !(Math.sign(v) === d && Math.abs(v) > drift)) {
+          const turning = v * d < -5;
+          this.body.setVelocityX(this.approach(v, d * drift,
+            (turning ? CFG.run.turnDecel : CFG.run.accel) * STEP));
+        }
+      }
       return;
     }
 
