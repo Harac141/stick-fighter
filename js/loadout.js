@@ -1,29 +1,39 @@
 // ============================================================================
-// LOADOUT MANAGER — swappable HEAVY moves + energy economy (base brawler).
+// LOADOUT MANAGER — swappable attacks + energy economy (base brawler).
 //
-// Design (user brief, Oct 2026): "let you have builds for your favorite
-// characters... normal attacks stay the same, but the heavy attacks can be
-// swapped out." Three slots (K, W+K, S+K). Movesets mix-and-mash across
-// slots; every swappable move carries a fixed ENERGY cost and a DIRECTION
-// binding ('neutral' | 'up' | 'down' | 'none'). A 'none' move (abilities
-// like a time-slow/buff) activates from any heavy press regardless of
-// modifier — "a time slow ability could go anywhere".
+// Design (user brief, Oct 2026, v2): "let's have two powers, one per hand...
+// you could have a sword in one hand and, say, time stop in the other...
+// swap moves for both keys, and either one could have heavy or light
+// attacks." Six slots: J / W+J / S+J (LEFT HAND column) and K / W+K / S+K
+// (RIGHT HAND column). Every move declares only a DIRECTION binding
+// ('neutral' | 'up' | 'down' | 'none'); 'none' fits ANY slot — that's where
+// duration/trigger powers (the future time-stop) will live. A slot cares only
+// about the pressed key+modifier, never whether its move is heavy- or
+// light-tier: any move fits either key. The hand ITEM art (which glove holds
+// the sword/whatnot) is deliberately deferred — "you can't really tell which
+// hand is doing the attack so just switch the items in the hands... later".
 //
-// v1 ships two sets:
-//   CLASSIC   the vanilla heavies (heavy / uppercutH / hammerfist), free.
-//   POWER-UP  copies of the J moves dealing heavy-tier damage for lots of
-//             energy, plus FURY: a duration ability (+25% damage on all
-//             attacks for 10s) that drains energy.
-// A future SWORD set plugs into LOADOUT_DEFS with no other code changes.
+// FURY (10s +25% buff) was REMOVED (user testing: "doesn't really do enough
+// to be worth a move slot"). The ability SCAFFOLD (kind:'ability',
+// tryActivate) stays dormant for the time-stop plan.
 //
-// The menu opens on E or I and HARD-PAUSES the scene (scene.pause: the fixed
-// step stops entirely — no sim, no render churn; DOM overlay on top). E is
-// only bound when the roguelike StyleManager is absent (E = IMBUE there);
-// I always works. The roguelike mode keeps its own power economy untouched.
+// Sets: CLASSIC = the vanilla moveset (free, byte-identical frame data —
+// including the J chain, which the 'jab' def passes through to Fighter's
+// vanilla chain logic via the LOADOUT_VANILLA sentinel). POWER-UP = copies of
+// the J moves with heavy-tier damage for energy (user v1 spec, now
+// equippable on EITHER key).
 //
-// Energy: its own pool (the style energy bar is a separate system). Bar +
-// buff timer draw under the P1 health bar. Persistence: equipped ids in
-// localStorage 'stickfight.loadout'; energy is per-life-session.
+// The menu opens on E or I and HARD-PAUSES the scene. While paused the
+// scene's keyboard plugin is dead, so ONE module-level DOM listener (bound
+// once, delegating through window.__loActive — scene.restart() recreates
+// managers and per-init listeners would stack) owns all menu input. Roguelike
+// ?style=1 excludes this system entirely (E is IMBUE there; its own energy
+// pool stays).
+//
+// Energy (own pool): earned ONLY through combat — +2 per landed hit, +12 per
+// kill. NO time regen (user: "avoiding engagement must be disadvantageous").
+// Equips persist in localStorage 'stickfight.loadout' (legacy 3-slot saves
+// migrate into the K column).
 // ============================================================================
 
 const LOADOUT_T = {
@@ -33,53 +43,76 @@ const LOADOUT_T = {
   // disadvantageous") — energy is earned ONLY by landing hits and kills.
   energyPerHit: 2,      // player attack lands
   energyPerKill: 12,
-  buffCost: 25,         // FURY activation
-  buffDrain: 4,         // energy/s while the buff runs (empty bar ends it)
-  buffFrames: 600,      // 10s
-  buffMult: 1.25,       // "slightly more damage"
+  // Dormant ability scaffold (Fury removed; a future time-stop will reuse):
+  buffCost: 25, buffDrain: 4, buffFrames: 600, buffMult: 1.25,
 };
 
 // id -> definition. Attacks copy an existing CFG.attacks entry (frame data,
 // pose, hitbox — the animation-never-touches-hitboxes law means copies are
 // honest here); abilities are instant effects, no attack start.
 const LOADOUT_DEFS = [
-  // CLASSIC set (the default loadout, byte-identical to vanilla heavies)
-  { id: 'heavy',      set: 'CLASSIC', name: 'HEAVY',          dir: 'neutral', cfg: 'heavy' },
-  { id: 'uppercutH',  set: 'CLASSIC', name: 'HEAVY UPPERCUT', dir: 'up',      cfg: 'uppercutH' },
-  { id: 'hammerfist', set: 'CLASSIC', name: 'HAMMERFIST',     dir: 'down',    cfg: 'hammerfist' },
-  // POWER-UP set (user spec: "copies of the J moves that deal as much damage
-  // as the heavy moves but cost lots of energy" + a duration buff)
+  // CLASSIC set — the default loadout, byte-identical to vanilla.
+  // 'jab' is vanilla-marked: the J press falls through to Fighter's chain
+  // machinery (pop-pop + J-J-K heavy cancel), which only selectAttack's
+  // tail knows how to run.
+  { id: 'jab',        set: 'CLASSIC', name: 'JAB STRING',      dir: 'neutral', cfg: 'jab1', vanilla: true },
+  { id: 'uppercut',   set: 'CLASSIC', name: 'UPPERCUT',        dir: 'up',      cfg: 'uppercut' },
+  { id: 'sweep',      set: 'CLASSIC', name: 'SWEEP',           dir: 'down',    cfg: 'sweep' },
+  { id: 'heavy',      set: 'CLASSIC', name: 'HEAVY',           dir: 'neutral', cfg: 'heavy' },
+  { id: 'uppercutH',  set: 'CLASSIC', name: 'HEAVY UPPERCUT',  dir: 'up',      cfg: 'uppercutH' },
+  { id: 'hammerfist', set: 'CLASSIC', name: 'HAMMERFIST',      dir: 'down',    cfg: 'hammerfist' },
+  // POWER-UP set (user spec): "copies of the J moves that deal as much
+  // damage as the heavy moves but cost lots of energy". Either key.
   { id: 'powerJab',   set: 'POWER-UP', name: 'POWER JAB',      dir: 'neutral', cfg: 'lo_powerJab',   energy: 30 },
   { id: 'powerUpper', set: 'POWER-UP', name: 'POWER UPPERCUT', dir: 'up',      cfg: 'lo_powerUpper', energy: 30 },
   { id: 'powerSweep', set: 'POWER-UP', name: 'POWER SWEEP',    dir: 'down',    cfg: 'lo_powerSweep', energy: 30 },
-  { id: 'fury',       set: 'POWER-UP', name: 'FURY  10s +25% DMG', dir: 'none', kind: 'ability', energy: LOADOUT_T.buffCost },
 ];
 
-const LOADOUT_SLOTS = ['neutral', 'up', 'down'];
-const SLOT_LABEL = { neutral: 'K', up: 'W+K', down: 'S+K' };
+// Slot ids are '<KEY>_<dir>'. The KEY half is which attack button feeds the
+// slot; the dir half matches a move's binding. Columns mirror the hand
+// fantasy (J = left/light, K = right/heavy) but tier is the MOVE's business:
+// any def can sit on either key.
+const LOADOUT_SLOTS = ['J_neutral', 'J_up', 'J_down', 'K_neutral', 'K_up', 'K_down'];
+const SLOT_LABEL = { J_neutral: 'J', J_up: 'W+J', J_down: 'S+J',
+                     K_neutral: 'K', K_up: 'W+K', K_down: 'S+K' };
+const LOADOUT_DEFAULTS = { J_neutral: 'jab', J_up: 'uppercut', J_down: 'sweep',
+                           K_neutral: 'heavy', K_up: 'uppercutH', K_down: 'hammerfist' };
+// selectFor() returns this sentinel when Fighter should fall through to its
+// vanilla tail (the classic jab: chain + heavy-cancel live there).
+const LOADOUT_VANILLA = { vanilla: true };
 
 class LoadoutManager {
   constructor(scene) {
     this.scene = scene;
     this.energy = LOADOUT_T.energyStart;
-    this.buffT = 0;                   // FURY frames remaining
+    this.buffT = 0;                   // dormant ability scaffold (see LOADOUT_T)
     this.open = false;
     this.flash = ''; this.flashT = 0; // e.g. 'LOW ENERGY' blip
-    // Equip: slot -> def id. Load saved build (validated against defs).
-    this.equip = { neutral: 'heavy', up: 'uppercutH', down: 'hammerfist' };
+    // Equip: slot id -> def id. Load saved build (validated against defs);
+    // migrate the legacy 3-slot (K-only, keys 'neutral'/'up'/'down') save
+    // format into the K column.
+    this.equip = Object.assign({}, LOADOUT_DEFAULTS);
     try {
       const saved = JSON.parse(localStorage.getItem('stickfight.loadout') || '{}');
+      const migrated = {};
       for (const s of LOADOUT_SLOTS) {
-        const d = LOADOUT_DEFS.find((x) => x.id === saved[s]);
-        if (d && (d.dir === s || d.dir === 'none')) this.equip[s] = d.id;
+        migrated[s] = saved[s] || (s.startsWith('K_') ? saved[s.split('_')[1]] : null) || null;
+      }
+      for (const s of LOADOUT_SLOTS) {
+        const d = LOADOUT_DEFS.find((x) => x.id === migrated[s]);
+        if (d && (d.dir === s.split('_')[1] || d.dir === 'none')) this.equip[s] = d.id;
       }
     } catch (e) { /* private mode: defaults */ }
+    this.sel = 'K_neutral';           // menu slot selection
+    this.cursor = 0;                  // pool cursor
     this._injectMoves();
+    window.__loActive = this;         // the one menu key handler drives
   }
 
   // POWER-UP copies ride the ORIGINAL J-move frame data (user: "copies of the
   // J moves") with heavy-tier damage — the energy cost is the balance lever,
-  // not the frames. Non-chaining: a heavy slot is a committed single move.
+  // not the frames. Non-chaining: a swapped move is a committed single hit
+  // (equipping it on J trades your jab string for it — a build decision).
   _injectMoves() {
     // Classic scripts share one global lexical scope: CFG (fighter.js const)
     // is directly visible here even though window.CFG is undefined.
@@ -94,12 +127,13 @@ class LoadoutManager {
   def(id) { return LOADOUT_DEFS.find((d) => d.id === id) || null; }
 
   // ---- Fighter integration -------------------------------------------------
-  // Heavy press landed on a grounded player slot. Returns the CFG attack key,
-  // or null to fall through to vanilla (p2, air, katana, missing set).
-  // Abilities activate HERE and return null (the press is spent on the spell).
-  selectFor(slot, p1) {
-    const d = this.def(this.equip[slot]);
+  // A player attack press landed on a slot. Returns the CFG attack key,
+  // LOADOUT_VANILLA to fall through to Fighter's tail, or null to spend the
+  // press with no attack (unaffordable / ability fired).
+  selectFor(slotId, p1) {
+    const d = this.def(this.equip[slotId]);
     if (!d) return null;
+    if (d.vanilla) return LOADOUT_VANILLA;
     if (d.kind === 'ability') { this.tryActivate(d); return null; }
     const cost = d.energy || 0;
     if (this.energy < cost) { this.setFlash('LOW ENERGY — ' + d.name + ' (' + cost + ')'); return null; }
@@ -113,13 +147,14 @@ class LoadoutManager {
     if (d && d.energy) { this.energy = Math.max(0, this.energy - d.energy); this._menuEnergy(); }
   }
 
+  // Dormant ability path (Fury removed; time-stop will use this shape).
   tryActivate(d) {
-    if (this.buffT > 0) return;                       // already raging; no refresh
+    if (this.buffT > 0) return;                       // already active; no refresh
     if (this.energy < d.energy) { this.setFlash('LOW ENERGY — ' + d.name + ' (' + d.energy + ')'); return; }
     this.energy -= d.energy;
     this.buffT = LOADOUT_T.buffFrames;
     if (this.scene.p1) this.scene.p1.loadoutDmgMult = LOADOUT_T.buffMult;
-    this.setFlash('FURY!');
+    this.setFlash(d.name + '!');
     this._menuEnergy();
   }
 
@@ -142,73 +177,91 @@ class LoadoutManager {
 
   setFlash(msg) { this.flash = msg; this.flashT = 100; }
 
-  // ---- MENU (pause overlay) ------------------------------------------------
+  // ---- MENU (pause overlay) -------------------------------------------------
+  // Picker layout: six slot rows (two hand-columns) + a pool panel listing
+  // every move compatible with the selected slot. Scales to a large move pool
+  // (the old click-to-cycle rows did not). Mouse-first; 1-6 select a slot,
+  // arrows + Enter pick from the pool.
   initMenu() {
-    if (document.getElementById('lo-menu')) return;
-    const st = document.createElement('style');
-    st.textContent = `
-      #lo-menu{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
-        background:rgba(5,6,12,.74);z-index:60;font-family:monospace;color:#cdd6f4;}
-      #lo-menu .lo-card{width:540px;background:#101423;border:1px solid #2a3a63;border-radius:12px;
-        padding:22px 26px;box-shadow:0 0 40px rgba(0,0,0,.6);}
-      #lo-menu .lo-head{display:flex;justify-content:space-between;font-size:18px;letter-spacing:3px;margin-bottom:4px;}
-      #lo-menu .lo-energy{color:#5fd6c4;font-size:13px;margin-bottom:14px;}
-      #lo-menu .lo-row{display:flex;align-items:center;gap:12px;padding:10px 12px;margin:6px 0;
-        border:1px solid #24304f;border-radius:8px;cursor:pointer;background:#0d1220;}
-      #lo-menu .lo-row:hover{border-color:#4a63a8;}
-      #lo-menu .lo-key{color:#f2b705;font-size:12px;min-width:44px;}
-      #lo-menu .lo-name{flex:1;font-size:15px;}
-      #lo-menu .lo-tag{font-size:11px;color:#8fa1d9;}
-      #lo-menu .lo-foot{margin-top:14px;font-size:11px;color:#5b6a94;}
-      #lo-menu .lo-resume{margin-top:12px;width:100%;padding:8px;background:#182238;color:#cdd6f4;
-        border:1px solid #2a3a63;border-radius:8px;font-family:inherit;font-size:13px;letter-spacing:2px;cursor:pointer;}
-      #lo-menu .lo-resume:hover{border-color:#4a63a8;}`;
-    document.head.appendChild(st);
-    const menu = document.createElement('div');
-    menu.id = 'lo-menu';
-    menu.innerHTML =
-      '<div class="lo-card">' +
-      '  <div class="lo-head"><span>LOADOUT</span><span id="lo-pts"></span></div>' +
-      '  <div class="lo-energy" id="lo-energy"></div>' +
-      LOADOUT_SLOTS.map((s, i) =>
-        '<div class="lo-row" id="lo-row-' + s + '" title="click to swap move">' +
-        '  <span class="lo-key">' + (i + 1) + '  ' + SLOT_LABEL[s] + '</span>' +
-        '  <span class="lo-name" id="lo-name-' + s + '"></span>' +
-        '  <span class="lo-tag" id="lo-tag-' + s + '"></span></div>').join('') +
-      '  <div class="lo-foot">click a row (or press 1/2/3) to cycle movesets &nbsp;·&nbsp; ' +
-      'CLASSIC heavies are free &nbsp;·&nbsp; POWER-UP moves burn energy' +
-      '  <br>normal J attacks, air moves and dash attacks are never swapped</div>' +
-      '  <button class="lo-resume" id="lo-resume">RESUME &nbsp;(E / I / ESC)</button>' +
-      '</div>';
-    document.body.appendChild(menu);
-    this.menuEl = menu;
-    for (const s of LOADOUT_SLOTS)
-      document.getElementById('lo-row-' + s).addEventListener('click', () => this.cycle(s));
-    document.getElementById('lo-resume').addEventListener('click', () => this.close());
-    // Number keys cycle slots while open. E/I/Esc CLOSE through here ONLY for
-    // Escape (E/I close via the scene key handler — binding them twice here
-    // would double-toggle). Digits aren't captured by the game, so a plain
-    // window listener is safe during pause (the keyboard plugin keeps firing
-    // while the scene is paused).
-    window.addEventListener('keydown', (ev) => {
-      if (!this.open) return;
-      if (ev.repeat) return;
-      // While PAUSED the scene's keyboard plugin is inactive — the DOM
-      // listener here is the ONLY input path (E/I must close from here; the
-      // scene handlers only ever see the OPENING press).
-      const c = ev.keyCode;
-      if (ev.key === '1') this.cycle('neutral');
-      else if (ev.key === '2') this.cycle('up');
-      else if (ev.key === '3') this.cycle('down');
-      else if (ev.key === 'Escape' || ev.key === 'e' || ev.key === 'E' || ev.key === 'i' || ev.key === 'I'
-               || c === 27 || c === 69 || c === 73) {
-        // The OPENING E keydown bubbles here too (scene handler opened the
-        // menu a microsecond ago) — ignoring presses within 300ms of opening
-        // stops that same event from instantly closing it again.
-        if (performance.now() - (this._openedAt || 0) < 300) return;
-        this.close();
+    if (!document.getElementById('lo-menu-style')) {
+      const st = document.createElement('style');
+      st.id = 'lo-menu-style';
+      st.textContent = `
+        #lo-menu{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+          background:rgba(5,6,12,.74);z-index:60;font-family:monospace;color:#cdd6f4;}
+        #lo-menu .lo-card{width:720px;max-width:94vw;background:#101423;border:1px solid #2a3a63;
+          border-radius:12px;padding:20px 24px;box-shadow:0 0 40px rgba(0,0,0,.6);}
+        #lo-menu .lo-head{display:flex;justify-content:space-between;font-size:18px;letter-spacing:3px;}
+        #lo-menu .lo-sub{color:#5b6a94;font-size:11px;margin:2px 0 10px;letter-spacing:1px;}
+        #lo-menu .lo-energy{color:#5fd6c4;font-size:13px;margin-bottom:12px;}
+        #lo-menu .lo-body{display:flex;gap:16px;}
+        #lo-menu .lo-col{flex:0 0 216px;}
+        #lo-menu .lo-colh{font-size:11px;letter-spacing:2px;color:#8fa1d9;margin:2px 0 6px;}
+        #lo-menu .lo-row{display:flex;align-items:center;gap:10px;padding:8px 10px;margin:5px 0;
+          border:1px solid #24304f;border-radius:8px;cursor:pointer;background:#0d1220;}
+        #lo-menu .lo-row:hover{border-color:#4a63a8;}
+        #lo-menu .lo-row.sel{border-color:#f2b705;background:#151b2e;}
+        #lo-menu .lo-key{color:#f2b705;font-size:12px;min-width:40px;}
+        #lo-menu .lo-name{flex:1;font-size:14px;}
+        #lo-menu .lo-tag{font-size:10px;color:#8fa1d9;text-align:right;}
+        #lo-menu .lo-poolwrap{flex:1;border-left:1px solid #24304f;padding-left:16px;min-width:0;}
+        #lo-menu #lo-pool{max-height:196px;overflow-y:auto;}
+        #lo-menu .lo-opt{display:flex;align-items:center;gap:10px;padding:7px 10px;margin:4px 0;
+          border:1px solid transparent;border-radius:8px;cursor:pointer;}
+        #lo-menu .lo-opt:hover{background:#141a2c;}
+        #lo-menu .lo-opt.cur{border-color:#4a63a8;background:#141a2c;}
+        #lo-menu .lo-opt.eq{outline:1px solid #3fd6b6;}
+        #lo-menu .lo-foot{margin-top:12px;font-size:10px;color:#5b6a94;}
+        #lo-menu .lo-resume{margin-top:10px;width:100%;padding:8px;background:#182238;color:#cdd6f4;
+          border:1px solid #2a3a63;border-radius:8px;font-family:inherit;font-size:13px;letter-spacing:2px;cursor:pointer;}
+        #lo-menu .lo-resume:hover{border-color:#4a63a8;}`;
+      document.head.appendChild(st);
+      const menu = document.createElement('div');
+      menu.id = 'lo-menu';
+      menu.innerHTML =
+        '<div class="lo-card">' +
+        '  <div class="lo-head"><span>LOADOUT</span></div>' +
+        '  <div class="lo-sub">TWO POWERS, ONE PER HAND — equip any move on any attack slot; tier is the move\u2019s business, not the hand\u2019s</div>' +
+        '  <div class="lo-energy" id="lo-energy"></div>' +
+        '  <div class="lo-body">' +
+             ['J', 'K'].map((key) =>
+               '<div class="lo-col"><div class="lo-colh">' +
+               (key === 'J' ? 'LEFT HAND \u00b7 LIGHT' : 'RIGHT HAND \u00b7 HEAVY') + '</div>' +
+               LOADOUT_SLOTS.filter((s) => s.startsWith(key)).map((s) =>
+                 '<div class="lo-row" data-slot="' + s + '">' +
+                 '  <span class="lo-key">' + SLOT_LABEL[s] + '</span>' +
+                 '  <span class="lo-name" id="lo-name-' + s + '"></span>' +
+                 '  <span class="lo-tag" id="lo-tag-' + s + '"></span></div>').join('') +
+               '</div>').join('') +
+        '    <div class="lo-poolwrap"><div class="lo-colh">CHOOSE \u2014 <span id="lo-pool-key"></span></div>' +
+        '      <div id="lo-pool"></div></div>' +
+        '  </div>' +
+        '  <div class="lo-foot">click a slot then a move \u00b7 1-6 select slot \u00b7 \u2191\u2193 + Enter pick \u00b7 ESC / E / I resume \u00b7' +
+        ' air & dash attacks never swap \u00b7 CLASSIC = free, POWER-UP burns energy (earned by fighting)</div>' +
+        '  <button class="lo-resume" id="lo-resume">RESUME \u00a0(E / I / ESC)</button>' +
+        '</div>';
+      document.body.appendChild(menu);
+      // ONE listener for the module (scene.restart() recreates managers; per-
+      // init listeners would stack and double-equip). Delegates to the live
+      // manager via window.__loActive.
+      if (!window.__loKeyBound) {
+        window.__loKeyBound = true;
+        window.addEventListener('keydown', (ev) => {
+          const m = window.__loActive;
+          if (m && m.open) m._menuKey(ev);
+        });
       }
-    });
+      // Click delegation (same single-listener reason).
+      menu.addEventListener('click', (ev) => {
+        const m = window.__loActive; if (!m || !m.open) return;
+        const row = ev.target.closest('.lo-row');
+        if (row) { m.select(row.dataset.slot); return; }
+        const opt = ev.target.closest('.lo-opt');
+        if (opt) { m.equipDef(opt.dataset.def); return; }
+        if (ev.target.closest('.lo-resume')) m.close();
+      });
+    }
+    this.menuEl = document.getElementById('lo-menu');
   }
 
   toggle() {
@@ -236,14 +289,54 @@ class LoadoutManager {
     this.scene.scene.resume();
   }
 
-  cycle(slot) {
-    // Pool = every def whose direction allows this slot ('none' fits any).
-    const pool = LOADOUT_DEFS.filter((d) => d.dir === slot || d.dir === 'none');
-    const i = pool.findIndex((d) => d.id === this.equip[slot]);
-    this.equip[slot] = pool[(i + 1) % pool.length].id;
+  select(slotId) {
+    if (LOADOUT_SLOTS.indexOf(slotId) < 0) return;
+    this.sel = slotId;
+    this.cursor = 0;
+    this._refresh();
+  }
+
+  // (Method name is equipDef, NOT equip: the instance field this.equip —
+  // slot -> def id map — would shadow a prototype method of the same name,
+  // making menu clicks / Enter silently throw.)
+  equipDef(defId) {
+    const dir = this.sel.split('_')[1];
+    const d = LOADOUT_DEFS.find((x) => x.id === defId && (x.dir === dir || x.dir === 'none'));
+    if (!d) return;
+    this.equip[this.sel] = d.id;
     try { localStorage.setItem('stickfight.loadout', JSON.stringify(this.equip)); }
     catch (e) { /* private mode */ }
     this._refresh();
+  }
+
+  // Keys while PAUSED: the scene keyboard plugin is dead — this listener (via
+  // the module delegate) is the only input path. E/I/Esc close from here; the
+  // scene handlers only ever see the OPENING press.
+  _menuKey(ev) {
+    if (ev.repeat) return;
+    const k = ev.key, c = ev.keyCode;
+    const n = Number(k);
+    if (n >= 1 && n <= LOADOUT_SLOTS.length) { this.select(LOADOUT_SLOTS[n - 1]); return; }
+    if (k === 'ArrowDown') { this.cursor++; this._renderPool(); return; }
+    if (k === 'ArrowUp')   { this.cursor--; this._renderPool(); return; }
+    if (k === 'Enter' || k === ' ') {
+      const p = this._pool();
+      if (p[this.cursor]) this.equipDef(p[this.cursor].id);
+      return;
+    }
+    if (k === 'Escape' || k === 'e' || k === 'E' || k === 'i' || k === 'I'
+        || c === 27 || c === 69 || c === 73) {
+      // The OPENING E keydown bubbles here too (scene handler opened the
+      // menu a microsecond ago) — ignoring presses within 300ms of opening
+      // stops that same event from instantly closing it again.
+      if (performance.now() - (this._openedAt || 0) < 300) return;
+      this.close();
+    }
+  }
+
+  _pool() {
+    const dir = this.sel.split('_')[1];
+    return LOADOUT_DEFS.filter((d) => d.dir === dir || d.dir === 'none');
   }
 
   _refresh() {
@@ -252,17 +345,35 @@ class LoadoutManager {
       const d = this.def(this.equip[s]);
       document.getElementById('lo-name-' + s).textContent = d ? d.name : '???';
       document.getElementById('lo-tag-' + s).textContent =
-        d ? d.set + '  ·  ' + (d.energy ? d.energy + ' ENERGY' : 'FREE')
-          + (d.dir === 'none' ? '  ·  ANY DIRECTION' : '') : '';
+        d ? d.set + '  \u00b7  ' + (d.energy ? d.energy + ' ENERGY' : 'FREE') : '';
+      document.querySelector('.lo-row[data-slot="' + s + '"]').classList.toggle('sel', s === this.sel);
     }
+    const keyEl = document.getElementById('lo-pool-key');
+    if (keyEl) keyEl.textContent = SLOT_LABEL[this.sel] + ' \u2014 ' + (this.sel.startsWith('J') ? 'left hand' : 'right hand');
+    this._renderPool();
   }
+
+  _renderPool() {
+    const wrap = document.getElementById('lo-pool');
+    if (!wrap) return;
+    const pool = this._pool();
+    this.cursor = Math.min(Math.max(this.cursor, 0), pool.length - 1);
+    wrap.innerHTML = pool.map((d, i) =>
+      '<div class="lo-opt' + (i === this.cursor ? ' cur' : '') +
+      (this.equip[this.sel] === d.id ? ' eq' : '') + '" data-def="' + d.id + '">' +
+      '  <span class="lo-name">' + d.name + '</span>' +
+      '  <span class="lo-tag">' + d.set + ' \u00b7 ' + (d.energy ? d.energy + ' ENERGY' : 'FREE') +
+      (d.dir === 'none' ? ' \u00b7 ANY SLOT' : '') + '</span></div>').join('');
+  }
+
   _menuEnergy() {
     const el = document.getElementById('lo-energy');
-    if (el) el.textContent = 'ENERGY  ' + Math.round(this.energy) + ' / ' + LOADOUT_T.energyMax +
-      (this.buffT > 0 ? '    FURY ' + (this.buffT / 60).toFixed(1) + 's' : '');
+    if (el) el.textContent = 'ENERGY  ' + Math.round(this.energy) + ' / ' + LOADOUT_T.energyMax;
   }
 }
 
 window.LOADOUT_T = LOADOUT_T;
 window.LOADOUT_DEFS = LOADOUT_DEFS;
+window.LOADOUT_SLOTS = LOADOUT_SLOTS;
+window.LOADOUT_VANILLA = LOADOUT_VANILLA;
 window.LoadoutManager = LoadoutManager;

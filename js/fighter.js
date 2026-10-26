@@ -675,18 +675,30 @@ class Fighter {
       if (H) return 'axekick';
       return 'airjab';
     }
-    // LOADOUT (swappable heavies, user: "normal attacks stay the same, but
-    // the heavy attacks can be swapped out"): a grounded p1 heavy press is
-    // answered by its EQUIPPED move for that direction slot. J moves, air
-    // moves and dash attacks are never swapped; p2 and the katana starter are
-    // untouched. A 'none'-direction ability (FURY) activates inside
-    // selectFor and spends the press (null = no attack). Returning null when
-    // the move is unaffordable means the press does nothing — a heavy slot
-    // never silently falls back to the vanilla move.
-    if (H && !this.ai && this.inputKey === 'p1' && this.weapon !== 'katana'
+    // LOADOUT (swappable attacks, user v2: "swap moves for both keys, and
+    // either one could have heavy or light attacks"): a grounded p1 press on
+    // EITHER attack key is answered by its EQUIPPED move for that
+    // key+direction slot (J/W+J/S+J + K/W+K/S+K). Air moves and dash attacks
+    // are never swapped (they returned above); p2 and the katana starter are
+    // untouched. A 'none'-direction ability activates inside selectFor and
+    // spends the press. LOADOUT_VANILLA falls through to the tail below (the
+    // classic 'jab' def — its chain + heavy-cancel live there). Returning
+    // null means the press is spent with NO attack (unaffordable — never a
+    // silent fallback to the free move).
+    if ((H || L) && !this.ai && this.inputKey === 'p1' && this.weapon !== 'katana'
         && this.scene.loadout) {
-      const slot = input.up ? 'up' : (input.down ? 'down' : 'neutral');
-      return this.scene.loadout.selectFor(slot, this);
+      const slot = (H ? 'K_' : 'J_') + (input.up ? 'up' : (input.down ? 'down' : 'neutral'));
+      const sel = this.scene.loadout.selectFor(slot, this);
+      // Property check, not identity against LOADOUT_VANILLA: fighter.js loads
+      // BEFORE loadout.js, so a cross-file const reference is a TDZ hazard.
+      // A vanilla 'jab' def runs its CHAIN inline off chainStep — keyed on the
+      // slot, NOT on input.jab — so equipping the jab string on the K key
+      // still doubles (a second press of that key links pop 2). The tail's
+      // own H/L branch would otherwise return 'heavy' for a K press.
+      if (sel && sel.vanilla) {
+        return (this.chainStep === 1 && this.chainT <= this.chainWindow) ? 'jab2' : 'jab1';
+      }
+      return sel;
     }
     if (input.up) return H ? 'uppercutH' : 'uppercut';   // up+attack = launcher, no jump needed
     if (input.down) return H ? 'hammerfist' : 'sweep';   // (also works from run)
