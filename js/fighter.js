@@ -126,6 +126,7 @@ const CFG = {
       startup: 4, active: 4, recovery: 7,       // quick horizontal slash
       damage: 7, lunge: 220,
       pose: 'slashL',
+      swipe: 'arc',                              // a slash CUTS (crescent), doesn't stab
       box:   { x: 34, y: -8, w: 62, h: 30 },    // chest-line cut
       guard: { x: 26, y: -22, w: 74, h: 66 },   // tall arc: catches chest bullets
       knock: { x: 340, y: -120, hitstun: 14 },

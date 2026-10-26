@@ -1012,6 +1012,7 @@ class FightScene extends Phaser.Scene {
   // box far edge. POWER-UP moves (atk.fx==='energy') glow red; everything
   // else is white. Whiffs still swipe (the arc is your attack's shadow).
   spawnSwipe(attacker, atk, hb) {
+    if (atk.fire) return;                              // guns don't swing
     const energy = atk.fx === 'energy';
     const dir = attacker.facing;
     const cx = attacker.x + dir * 10;                    // pivot near the shoulder
@@ -1019,12 +1020,33 @@ class FightScene extends Phaser.Scene {
     const reach = Math.max(14, Math.abs(hb.x + hb.w / 2 - attacker.x)); // to box center
     const rIn = reach * 0.4;
     const rOut = reach + hb.w * 0.4;
+    // SHAPE follows the attack's direction of travel (user: "an attack that
+    // goes straight out gets the straight-out swipe; hammerfist keeps the
+    // current one"). Classified from the move's OWN launch/knock data + box
+    // proportions, so it survives loadout re-slotting (power copies inherit)
+    // and can never disagree with the real hitbox.
+    const knockY = (atk.knock && atk.knock.y) || 0;
+    const rel = midY - attacker.y;                       // box height vs body centre
+    let type = atk.swipe;                                // optional per-move override
+    if (!type) {
+      if (knockY <= -400 && hb.h >= hb.w * 0.8) type = 'rising';   // launchers arc up
+      else if (knockY >= 300 && hb.h >= hb.w * 0.6) type = 'chop'; // meteor spikes down
+      else if (hb.w >= hb.h * 1.6 && hb.h <= 30 && Math.abs(rel) <= 18) type = 'thrust';
+      else type = 'arc';                                 // hammerfist / sweep / cleaves
+    }
     // Taller / harder hits sweep a wider crescent (ankle sweeps stay flat,
     // uppercuts/heavies arc big).
     const spread = Math.min(1.5, 0.55 + (hb.h / 46) + (atk.damage / 40));
+    // Unit direction of travel for the streak shapes (arc keeps the crescent):
+    // launchers rip UP along the fist path, meteors spike DOWN-forward.
+    let ux = dir, uy = 0;
+    if (type === 'rising') { ux = dir * 0.55; uy = -0.84; }
+    else if (type === 'chop') { ux = dir * 0.42; uy = 0.91; }
     this.effects.push({
-      kind: 'swipe', energy, dir,
+      kind: 'swipe', energy, dir, type,
       x: cx, y: midY, rIn, rOut, spread,
+      ux, uy,
+      hw: Math.max(7, Math.min(hb.h, 30) * 0.45),        // streak half-thickness
       t: 0, life: energy ? 9 : 6,                        // energy arcs linger a touch
     });
   }
@@ -1073,8 +1095,30 @@ class FightScene extends Phaser.Scene {
         // a slash that's already translucent by frame 2 reads as a wireframe.
         const fade = k < 0.7 ? 1 : (1 - k) / 0.3;
         const sweepNow = e.spread * Math.min(1, 0.35 + k * 1.1);
-        const base = e.dir > 0 ? 0 : Math.PI;            // facing: 0 fwd, mirrored back
+        const base = e.dir > 0 ? 0 : Math.PI;             // crescent centred on facing
         const steps = 14;
+        if (e.type !== 'arc') {
+          // STREAK along the unit direction of travel (e.ux/e.uy): manga speed
+          // lines that EXTEND outward from the pivot. thrust = horizontal
+          // (jabs/straights/shoulder check), rising = diagonal up (launchers),
+          // chop = diagonal down-forward (axekick meteor).
+          const grow = Math.min(1, 0.45 + k * 1.3);
+          const len = e.rOut * grow;
+          const px = -e.uy * e.dir, py = e.ux * e.dir;    // perpendicular offset axis
+          const s0 = e.rIn * 0.35;
+          const lines = [[0, 1], [-e.hw * 1.15, 0.5], [e.hw * 1.15, 0.5]];
+          for (const [off, wm] of lines) {
+            const ox = px * off, oy = py * off;
+            g.lineStyle((e.energy ? 7 : 6) * wm, glow, 0.5 * fade * wm);   // bloom
+            g.lineBetween(e.x + e.ux * s0 + ox, e.y + e.uy * s0 + oy,
+                          e.x + e.ux * len + ox, e.y + e.uy * len + oy);
+            g.lineStyle((e.energy ? 3.5 : 3) * wm, col, 0.95 * fade * wm); // core
+            g.lineBetween(e.x + e.ux * s0 + ox, e.y + e.uy * s0 + oy,
+                          e.x + e.ux * len + ox, e.y + e.uy * len + oy);
+          }
+          g.fillStyle(col, fade);
+          g.fillCircle(e.x + e.ux * len, e.y + e.uy * len, e.energy ? 5 : 4); // hot tip
+        } else {
         // FILLED crescent: triangle strip between inner and outer radii —
         // a body of colour, then a bright core stroke down the middle.
         const pts = [];
@@ -1107,6 +1151,7 @@ class FightScene extends Phaser.Scene {
         g.fillStyle(col, fade);
         g.fillCircle(e.x + pts[steps][0] * ri(tipF), e.y + pts[steps][1] * ri(tipF),
                      e.energy ? 5 : 4);
+        }
       } else if (e.kind === 'spark') {
         const col = e.energy ? 0xff6b6b : 0xffffff;
         const core = e.energy ? 0xffd0d0 : 0xffffff;
