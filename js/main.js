@@ -546,7 +546,22 @@ class FightScene extends Phaser.Scene {
     this.hud.setScrollFactor(0);
 
     // ---- STYLE (roguelike v1): ?style=1 arms the power system. ----
-    if (new URLSearchParams(location.search).get('style') === '1') {
+    const _styleOn = new URLSearchParams(location.search).get('style') === '1';
+    if (!_styleOn) {
+      // ---- LOADOUT (swappable heavies): base brawler only. The roguelike
+      // mode keeps its own energy economy and already owns E (IMBUE). ----
+      this.loadout = new window.LoadoutManager(this);
+      this.loadout.initMenu();
+      // E or I opens the menu and HARD-pauses (scene.pause: fixed step stops).
+      // Restart-stacking guard like the style keys (shutdown keeps listeners).
+      if (!this._loKeysWired) {
+        this._loKeysWired = true;
+        const kLo1 = kb.addKey('E'), kLo2 = kb.addKey('I');
+        kLo1.on('down', () => { if (this.loadout) this.loadout.toggle(); });
+        kLo2.on('down', () => { if (this.loadout) this.loadout.toggle(); });
+      }
+    }
+    if (_styleOn) {
       this.style = new window.StyleManager(this);
       this.wave = 1;                     // scene object survives scene.restart(): reset escalation
       this.bullets = [];
@@ -993,6 +1008,7 @@ class FightScene extends Phaser.Scene {
     this.lastIn = { p1: i1, p2: i2 };   // press-intent for separateBodies
     for (const f of this.fighters) this.stepFighter(f, f.inputKey === 'p2' ? i2 : i1, gate);
     if (st) st.tick();
+    if (this.loadout) this.loadout.tick();   // regen + FURY clock (gate 1 always in base mode)
     if (this.eng && gate === 1) this.eng.tick();   // handoff cooldown pace
     if (gate === 1) this.checkTriggers();          // progress-gated spawn zones (levels)
     this.resolveHits();
@@ -1079,6 +1095,7 @@ class FightScene extends Phaser.Scene {
     // (Bullet hits call this too — gate on attacker so a bullet hitting YOU
     // never "heals" you for its own damage.)
     if (this.style && hb.attacker === this.p1) { this.style.onPlayerHit(hb); this.style.healFor(hb.damage); }
+    if (this.loadout && hb.attacker === this.p1) this.loadout.onPlayerHit();
   }
 
   // Body-block: fighters can't occupy the same space. Push apart AND kill
@@ -1247,6 +1264,30 @@ class FightScene extends Phaser.Scene {
       const w2 = barW * this.p2.health / 100;
       g.fillStyle(0xff5a5a, 1); g.fillRect(rx + barW - w2, 28, w2, barH);
     }
+    // ---- LOADOUT HUD (base brawler): energy bar under the P1 health bar ----
+    if (this.loadout && !this.loadout.open) {
+      const lo = this.loadout, T = window.LOADOUT_T;
+      const ey = 58, eW = 260, eH = 8;
+      g.fillStyle(0x000000, 0.55); g.fillRect(pad - 3, ey - 3, eW + 6, eH + 6);
+      g.fillStyle(0x1c2230, 1); g.fillRect(pad, ey, eW, eH);
+      g.fillStyle(0x3fd6b6, 1); g.fillRect(pad, ey, eW * lo.energy / T.energyMax, eH);
+      if (lo.buffT > 0) {  // FURY: gold sliver = remaining buff time
+        g.fillStyle(0xf2b705, 1);
+        g.fillRect(pad, ey + eH + 2, eW * lo.buffT / T.buffFrames, 3);
+      }
+      if (lo.flashT > 0) {
+        if (!this._loFlash) {
+          this._loFlash = this.add.text(pad, 72, '', { fontFamily: 'monospace', fontSize: '13px', color: '#ff8f5a' });
+          this._loFlash.setScrollFactor(0);
+        }
+        this._loFlash.setText(lo.flash).setVisible(true);
+      } else if (this._loFlash) this._loFlash.setVisible(false);
+      if (!this._loHint) {
+        this._loHint = this.add.text(1280 - pad, 58, 'E/I LOADOUT', { fontFamily: 'monospace', fontSize: '11px', color: '#5b6a94' });
+        this._loHint.setOrigin(1, 0).setScrollFactor(0);
+      }
+    } else if (this._loFlash) this._loFlash.setVisible(false);
+
     // Labels.
     this.labels || this.makeLabels();
 

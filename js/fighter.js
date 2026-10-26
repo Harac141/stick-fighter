@@ -675,6 +675,19 @@ class Fighter {
       if (H) return 'axekick';
       return 'airjab';
     }
+    // LOADOUT (swappable heavies, user: "normal attacks stay the same, but
+    // the heavy attacks can be swapped out"): a grounded p1 heavy press is
+    // answered by its EQUIPPED move for that direction slot. J moves, air
+    // moves and dash attacks are never swapped; p2 and the katana starter are
+    // untouched. A 'none'-direction ability (FURY) activates inside
+    // selectFor and spends the press (null = no attack). Returning null when
+    // the move is unaffordable means the press does nothing — a heavy slot
+    // never silently falls back to the vanilla move.
+    if (H && !this.ai && this.inputKey === 'p1' && this.weapon !== 'katana'
+        && this.scene.loadout) {
+      const slot = input.up ? 'up' : (input.down ? 'down' : 'neutral');
+      return this.scene.loadout.selectFor(slot, this);
+    }
     if (input.up) return H ? 'uppercutH' : 'uppercut';   // up+attack = launcher, no jump needed
     if (input.down) return H ? 'hammerfist' : 'sweep';   // (also works from run)
     if (H) return 'heavy';
@@ -705,6 +718,10 @@ class Fighter {
     this.currentAttack = name;
     this.attackFrame = 0;
     this.hitConfirmed = false;
+    // LOADOUT: a swappable heavy pays its energy AT COMMIT (selectFor only
+    // answers affordability; this is the charge). Free CLASSIC moves are a
+    // no-op — they carry no `energy` field.
+    if (this.scene.loadout) this.scene.loadout.spendFor(name);
     this.firedShot = false;   // one bullet per shoot swing (armed here, set on fire)
     // Snap the anticipation pose (punches must NOT smear in), but let the
     // retraction at the END blend out smoothly back to guard/run.
@@ -821,7 +838,12 @@ class Fighter {
     // user anti-camp rule), and apply the IMBUE damage multiplier (v1
     // power; scene.style owns the timer/level).
     const mul = (this.imbueMult > 1 && this === this.scene.p1) ? this.imbueMult : 1;
-    for (const hb of this.hitboxes) { hb.attacker = this; if (mul > 1) hb.damage *= mul; }
+    // LOADOUT FURY: duration buff — "all attacks deal slightly more damage
+    // for 10 seconds" (user). Multiplies EVERY published hitbox the player
+    // throws (J moves, heavies, bullets), stacked with IMBUE if roguelike
+    // mode is also running.
+    const lmul = (this.loadoutDmgMult > 1 && this === this.scene.p1) ? this.loadoutDmgMult : 1;
+    for (const hb of this.hitboxes) { hb.attacker = this; if (mul > 1) hb.damage *= mul; if (lmul > 1) hb.damage *= lmul; }
     if (this.attackFrame >= activeStart + atk.active + atk.recovery) {
       this.currentAttack = null;
       this.hitboxes.length = 0;
@@ -1162,6 +1184,7 @@ class Fighter {
       // kills are free of style value by construction).
       if (hb.attacker && this.scene.style)
         this.scene.style.creditKill(this, hb.damage - hpBefore, hb.attacker);
+      if (hb.attacker && this.scene.loadout) this.scene.loadout.onKill(hb.attacker);
       this.ko(hb);
     }
   }
