@@ -855,7 +855,27 @@ class Fighter {
     // throws (J moves, heavies, bullets), stacked with IMBUE if roguelike
     // mode is also running.
     const lmul = (this.loadoutDmgMult > 1 && this === this.scene.p1) ? this.loadoutDmgMult : 1;
-    for (const hb of this.hitboxes) { hb.attacker = this; if (mul > 1) hb.damage *= mul; if (lmul > 1) hb.damage *= lmul; }
+    for (const hb of this.hitboxes) { hb.attacker = this; hb.fx = atk.fx || null; if (mul > 1) hb.damage *= mul; if (lmul > 1) hb.damage *= lmul; }
+    // ---- EFFECT LAYER (user: swipe lines so you can SEE which attack you
+    // did — "tell a power jab apart from a normal jab"). Swipes spawn exactly
+    // where the damaging hitbox publishes (same frames, real box geometry —
+    // effects NEVER touch frame data and the shape derives from the hitbox so
+    // it can't lie about the move). Multi-hit moves (hitFrames) open a fresh
+    // window per hit: reset the __swiped mark when a new window starts so the
+    // uppercutH's tick-then-pop reads as TWO arcs. Colour/energy tag lives on
+    // atk.fx (set on the POWER-UP copies in loadout.js).
+    if (atk.hitFrames) {
+      // a new hitFrame began this tick -> let the fresh box spawn its own arc
+      for (const hf of atk.hitFrames)
+        if (this.attackFrame === hf) this._swipeArmed = false;
+    }
+    if (this.hitboxes.length && this.scene.spawnSwipe && !this._swipeArmed) {
+      this._swipeArmed = true;
+      this.scene.spawnSwipe(this, atk, this.hitboxes[0]);
+    }
+    // one arc per ACTIVE window: unarm while the box is still open so a fresh
+    // (post-landed) window can spawn, but never re-spawn within the same one.
+    if (!this.hitboxes.length) this._swipeArmed = false;
     if (this.attackFrame >= activeStart + atk.active + atk.recovery) {
       this.currentAttack = null;
       this.hitboxes.length = 0;

@@ -118,9 +118,11 @@ class LoadoutManager {
     // is directly visible here even though window.CFG is undefined.
     if (typeof CFG !== 'undefined' && CFG.attacks && !CFG.attacks.lo_powerJab) {
       const copy = (base, over) => Object.assign({}, CFG.attacks[base], over, { chain: false });
-      CFG.attacks.lo_powerJab   = copy('jab1',     { damage: 14, loCost: 30 });
-      CFG.attacks.lo_powerUpper = copy('uppercut', { damage: 12, loCost: 30 });
-      CFG.attacks.lo_powerSweep = copy('sweep',    { damage: 14, loCost: 30 });
+      // fx:'energy' marks the POWER-UP moves for the effect layer (red
+      // swipes/sparks vs white) — pure presentation, never frame data.
+      CFG.attacks.lo_powerJab   = copy('jab1',     { damage: 14, loCost: 30, fx: 'energy' });
+      CFG.attacks.lo_powerUpper = copy('uppercut', { damage: 12, loCost: 30, fx: 'energy' });
+      CFG.attacks.lo_powerSweep = copy('sweep',    { damage: 14, loCost: 30, fx: 'energy' });
     }
   }
 

@@ -545,6 +545,22 @@ class FightScene extends Phaser.Scene {
     this.hud = this.add.graphics();
     this.hud.setScrollFactor(0);
 
+    // ---- EFFECT LAYER (user: white swipe lines + hit sparks; red for the
+    // energy/POWER-UP moves; impact frames scale with damage — so you can
+    // SEE which move you did, e.g. a power jab vs a normal jab). World-space
+    // gfx (scrolls with the camera like bullets/sights). Pure presentation:
+    // spawned from the REAL hitbox publish, never feeds back into frame data.
+    // Lazy-safe (if !fxGfx): scene.restart() + the empty shutdown handler
+    // keep Phaser objects alive, same idiom as bulletGfx/sightGfx.
+    if (!this.fxGfx) {
+      this.fxGfx = this.add.graphics();
+      this.fxGfx.setDepth(7);
+    }
+    this.effects = [];        // swipes + sparks (aged in renderAll)
+    this.fxStop = 0;          // impact-frame (hit-stop) countdown
+    this.fxFlash = 0;         // heavy-hit impact flash frames
+    this.fxFlashColor = 0xffffff;
+
     // ---- STYLE (roguelike v1): ?style=1 arms the power system. ----
     const _styleOn = new URLSearchParams(location.search).get('style') === '1';
     if (!_styleOn) {
@@ -629,6 +645,18 @@ class FightScene extends Phaser.Scene {
   }
 
   update(time, deltaMs) {
+    // IMPACT FRAMES (hit-stop): a landed hit freezes the sim for a few frames
+    // (scaled by damage in spawnHitSpark) while rendering keeps running —
+    // the classic freeze-frame of impact. Effects HOLD their pose during the
+    // stop (renderFX ages only when not stopped), so the spark burst hangs
+    // right there on contact. Bullet time / offers unaffected (they gate
+    // inside simStep, and this simply defers sim steps).
+    if (this.fxStop > 0) {
+      this.fxStop--;
+      this.acc = Math.min(this.acc, SIM_STEP);   // don't bank frozen time
+      this.renderAll();
+      return;
+    }
     // Fixed-step accumulator (clamped to avoid spiral-of-death after tab-out).
     this.acc += Math.min(deltaMs, 100) / 1000;
     let steps = 0;
@@ -889,7 +917,8 @@ class FightScene extends Phaser.Scene {
         if (Math.abs(dx) < CFG.body.width / 2 + 3 && Math.abs(dy) < CFG.body.height / 2 + 3) {
           bl.dead = true;
           f.takeHit({ damage: bl.damage, knock: bl.knock }, Math.sign(bl.vx) || 1);
-          this.onHitFeedback({ damage: bl.damage });
+          // x/y/w/h so the hit spark lands AT the bullet, not at NaN.
+          this.onHitFeedback({ damage: bl.damage, x: bl.x - 3, y: bl.y - 3, w: 6, h: 6 });
           break;
         }
       }
@@ -971,6 +1000,136 @@ class FightScene extends Phaser.Scene {
       g.fillStyle(0xff5555, alpha * 0.9);            // endpoint pip
       g.fillCircle(ex, ey, 2.2);
     }
+  }
+
+  // ---- EFFECT LAYER -------------------------------------------------------
+  // Swipes spawn from Fighter.tickAttack exactly when a damaging hitbox
+  // publishes, so the arc's position/size are the REAL hitbox geometry — the
+  // effect can never misrepresent the frame data (the animation law, honored).
+  // A swipe reads as a crescent swept from the attacker's shoulder height
+  // toward/around the hitbox: its vertical center + height come from the box
+  // (so a sweep hugs the ankles, an uppercut sweeps high), its reach from the
+  // box far edge. POWER-UP moves (atk.fx==='energy') glow red; everything
+  // else is white. Whiffs still swipe (the arc is your attack's shadow).
+  spawnSwipe(attacker, atk, hb) {
+    const energy = atk.fx === 'energy';
+    const dir = attacker.facing;
+    const cx = attacker.x + dir * 10;                    // pivot near the shoulder
+    const midY = hb.y + hb.h / 2;                        // arc rides the box height
+    const reach = Math.max(14, Math.abs(hb.x + hb.w / 2 - attacker.x)); // to box center
+    const rIn = reach * 0.4;
+    const rOut = reach + hb.w * 0.4;
+    // Taller / harder hits sweep a wider crescent (ankle sweeps stay flat,
+    // uppercuts/heavies arc big).
+    const spread = Math.min(1.5, 0.55 + (hb.h / 46) + (atk.damage / 40));
+    this.effects.push({
+      kind: 'swipe', energy, dir,
+      x: cx, y: midY, rIn, rOut, spread,
+      t: 0, life: energy ? 9 : 6,                        // energy arcs linger a touch
+    });
+  }
+
+  // A hit landed: spark burst at the contact point, size + flash scale with
+  // damage, colour follows the MOVE (red if the attacker's move is energy).
+  spawnHitSpark(hb) {
+    if (hb.x == null) return;   // geometry-less synthetic feedback: no spark
+    const attacker = hb.attacker;
+    const atk = attacker && attacker.currentAttack && CFG.attacks[attacker.currentAttack];
+    const energy = (atk && atk.fx === 'energy') || (hb.fx === 'energy');
+    const d = Math.max(1, hb.damage || 5);
+    const cx = hb.x + hb.w / 2, cy = hb.y + hb.h / 2;
+    const n = Math.min(9, 3 + Math.round(d / 4));
+    const spd = 1.4 + d * 0.14;
+    const parts = [];
+    for (let i = 0; i < n; i++) {
+      const a = (Math.PI * 2 * i / n) + Math.random() * 0.6;
+      const v = spd * (0.6 + Math.random() * 0.8);
+      parts.push({ x: cx, y: cy, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 1 });
+    }
+    this.effects.push({ kind: 'spark', energy, x: cx, y: cy, r: 6 + d * 0.9,
+      parts, t: 0, life: 12 });
+    // IMPACT FRAMES (hit-stop): a brief mutual freeze, longer for heavy hits.
+    // 3/4/6/8 frames for light/medium/heavy/massive. Freezing the frame CLOCK
+    // (not just visuals) is what sells "that landed".
+    this.fxStop = Math.max(this.fxStop || 0, d < 6 ? 3 : d < 12 ? 4 : d < 18 ? 6 : 8);
+    if (d >= 10) { this.fxFlash = 3; this.fxFlashColor = energy ? 0xff5a5a : 0xffffff; }
+  }
+
+  // Advance + draw every effect. Effects age on RENDER (presentation only —
+  // the fixed sim step is untouched, hit-stop is the one sim-affecting piece,
+  // handled in update() via fxStop).
+  renderFX(frozen) {
+    const g = this.fxGfx;
+    if (!g) { if (this.effects) this.effects.length = 0; return; }
+    g.clear();
+    const keep = [];
+    for (const e of this.effects) {
+      const k = e.t / e.life;                 // 0..1 progress
+      const fade = 1 - k;
+      if (e.kind === 'swipe') {
+        const col = e.energy ? 0xff5555 : 0xffffff;
+        const glow = e.energy ? 0xff2020 : 0xe8f2ff;   // near-white bloom (reads white on navy)
+        // HOLD near-full alpha for most of the life, fade only the last 30%:
+        // a slash that's already translucent by frame 2 reads as a wireframe.
+        const fade = k < 0.7 ? 1 : (1 - k) / 0.3;
+        const sweepNow = e.spread * Math.min(1, 0.35 + k * 1.1);
+        const base = e.dir > 0 ? 0 : Math.PI;            // facing: 0 fwd, mirrored back
+        const steps = 14;
+        // FILLED crescent: triangle strip between inner and outer radii —
+        // a body of colour, then a bright core stroke down the middle.
+        const pts = [];
+        for (let i = 0; i <= steps; i++) {
+          const a = base - sweepNow / 2 + sweepNow * (i / steps);
+          const ca = Math.cos(a), sa = Math.sin(a) * 0.7;
+          pts.push([ca, sa]);
+        }
+        const ri = (f) => e.rIn + (e.rOut - e.rIn) * f;
+        for (let i = 0; i < steps; i++) {
+          const f0 = 0.5 + 0.5 * Math.sin(Math.PI * i / steps);
+          const f1 = 0.5 + 0.5 * Math.sin(Math.PI * (i + 1) / steps);
+          const a0 = pts[i], a1 = pts[i + 1];
+          const ax = e.x + a0[0] * ri(f0), ay = e.y + a0[1] * ri(f0);
+          const bx = e.x + a1[0] * ri(f1), by = e.y + a1[1] * ri(f1);
+          const cx = e.x + a0[0] * ri(f0 + 0.42), cy = e.y + a0[1] * ri(f0 + 0.42);
+          const dx = e.x + a1[0] * ri(f1 + 0.42), dy = e.y + a1[1] * ri(f1 + 0.42);
+          g.fillStyle(glow, 0.9 * fade);
+          g.fillTriangle(ax, ay, bx, by, cx, cy);
+          g.fillTriangle(bx, by, dx, dy, cx, cy);
+        }
+        g.lineStyle(e.energy ? 3 : 2.5, col, 0.95 * fade);   // bright core stroke
+        for (let i = 1; i <= steps; i++) {
+          const f0 = 0.5 + 0.5 * Math.sin(Math.PI * (i - 1) / steps);
+          const f1 = 0.5 + 0.5 * Math.sin(Math.PI * i / steps);
+          g.lineBetween(e.x + pts[i-1][0] * ri(f1), e.y + pts[i-1][1] * ri(f1),
+                        e.x + pts[i][0] * ri(f1), e.y + pts[i][1] * ri(f1));
+        }
+        const tipF = 0.5 + 0.5 * Math.sin(Math.PI);
+        g.fillStyle(col, fade);
+        g.fillCircle(e.x + pts[steps][0] * ri(tipF), e.y + pts[steps][1] * ri(tipF),
+                     e.energy ? 5 : 4);
+      } else if (e.kind === 'spark') {
+        const col = e.energy ? 0xff6b6b : 0xffffff;
+        const core = e.energy ? 0xffd0d0 : 0xffffff;
+        // STARBURST: radiating spokes + a hot core that pops then shrinks.
+        // (The old expanding-ring read as a "bullseye", not an impact.)
+        const grow = Math.min(1, 0.6 + k * 1.2);
+        for (let i = 0; i < e.parts.length; i++) {
+          const p = e.parts[i];
+          const len = e.r * grow * (0.9 + 0.5 * ((i % 3) / 2));
+          const x2 = e.x + p.vx * len / (Math.hypot(p.vx, p.vy) || 1) * 2.8;
+          const y2 = e.y + p.vy * len / (Math.hypot(p.vx, p.vy) || 1) * 2.8;
+          g.lineStyle(e.energy ? 3.5 : 3, col, 0.95 * fade);
+          g.lineBetween(e.x, e.y, x2, y2);
+        }
+        // hot core: pops at frame 0, shrinks as it fades
+        g.fillStyle(core, fade);
+        g.fillCircle(e.x, e.y, e.r * (0.55 - 0.35 * k));
+      }
+      e.t += frozen ? 0 : 1;                     // HOLD during hit-stop frames
+      if (e.t < e.life) keep.push(e);
+    }
+    this.effects.length = 0;
+    for (const e of keep) this.effects.push(e);
   }
 
   renderBullets() {
@@ -1096,6 +1255,9 @@ class FightScene extends Phaser.Scene {
     // never "heals" you for its own damage.)
     if (this.style && hb.attacker === this.p1) { this.style.onPlayerHit(hb); this.style.healFor(hb.damage); }
     if (this.loadout && hb.attacker === this.p1) this.loadout.onPlayerHit();
+    // EFFECT LAYER: spark + impact frames on contact. (Bullets carry no
+    // attacker.currentAttack, so they spark white/small — fine.)
+    this.spawnHitSpark(hb);
   }
 
   // Body-block: fighters can't occupy the same space. Push apart AND kill
@@ -1235,6 +1397,20 @@ class FightScene extends Phaser.Scene {
     for (const f of this.fighters) { if (!f.dead) f.render(); else if (f.ragdoll) f.renderRagdoll(); }
     this.renderBullets();
     this.renderSights();
+    this.renderFX(this.fxStop > 0);   // frozen during impact frames
+    // Heavy-hit impact FLASH: full-screen tint for a couple frames.
+    {
+      if (!this.fxFlashGfx) {
+        this.fxFlashGfx = this.add.graphics().setScrollFactor(0).setDepth(9);
+      }
+      const fg = this.fxFlashGfx;
+      fg.clear();
+      if (this.fxFlash > 0) {
+        fg.fillStyle(this.fxFlashColor, 0.16 * (this.fxFlash / 3));
+        fg.fillRect(0, 0, 1280, 720);
+        this.fxFlash--;   // renderAll runs exactly once per frame
+      }
+    }
     this.updateCamera();
 
     // HUD health bars.
@@ -1264,10 +1440,12 @@ class FightScene extends Phaser.Scene {
       const w2 = barW * this.p2.health / 100;
       g.fillStyle(0xff5a5a, 1); g.fillRect(rx + barW - w2, 28, w2, barH);
     }
-    // ---- LOADOUT HUD (base brawler): energy bar under the P1 health bar ----
+    // ---- LOADOUT HUD (base brawler): energy bar BELOW the control hint
+    // labels (y54) so nothing collides — P1 bar row is health(28) then the
+    // hint(54) then energy(76). ----
     if (this.loadout && !this.loadout.open) {
       const lo = this.loadout, T = window.LOADOUT_T;
-      const ey = 58, eW = 260, eH = 8;
+      const ey = 76, eW = 260, eH = 8;
       g.fillStyle(0x000000, 0.55); g.fillRect(pad - 3, ey - 3, eW + 6, eH + 6);
       g.fillStyle(0x1c2230, 1); g.fillRect(pad, ey, eW, eH);
       g.fillStyle(0x3fd6b6, 1); g.fillRect(pad, ey, eW * lo.energy / T.energyMax, eH);
