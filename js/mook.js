@@ -276,8 +276,15 @@ class MookAI {
         if (this._hist.length > 4) this._hist.shift();
         let path = 0;
         for (let i = 1; i < this._hist.length; i++) path += Math.abs(this._hist[i] - this._hist[i - 1]);
+        // Probe dir: dec.dir when the decision carries one, else the
+        // FIGHTER's facing. (PITFALL: `this.facing` was MookAI — which has NO
+        // facing property, facing lives on f. 'attack' decisions are created
+        // without dir, so the old fallback was undefined -> NaN probe ->
+        // blockSide never returned 'x' -> stuckT never accumulated -> mooks
+        // forgot how to vault pillars while pinned in attack mode.)
+        const pd = (this.dec.dir != null ? this.dec.dir : f.facing) || 1;
         const wallAhead = !f.airborne && pressing && path <= 40
-          && (f.scene.blockSide(f.sprite.x + (this.dec.dir || this.facing) * 30,
+          && (f.scene.blockSide(f.sprite.x + pd * 30,
                 f.sprite.y - f.body.height / 2,
                 f.sprite.y + f.body.height / 2, 20)?.axis === 'x');
         this.stuckT = wallAhead ? (this.stuckT || 0) + 1 : 0;
