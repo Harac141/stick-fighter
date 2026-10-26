@@ -264,8 +264,10 @@ class MookAI {
     {
       const pressing = this.dec && (this.dec.mode === 'close' || this.dec.mode === 'band'
                                     || this.dec.mode === 'attack');
-      if (!this._sxT) {                       // sample x every ~10 ticks
-        this._sxT = 10;
+      if (!this._sxT) {                       // sample x every ~5 ticks
+        this._sxT = 5;                        // (was 10 -> pinned mooks took
+                                              // ~1.5 s to commit to a vault;
+                                              // user: 'weirdly long time')
         // Pinned = total path length over the last 4 samples stays tiny.
         // A wall-pinned body OSCILLATES (drive step then wall-eject: 1472 <->
         // 1480), so |x - x_prev| alone spikes and reset the counter every
@@ -291,12 +293,16 @@ class MookAI {
       }
       this._sxT--;
     }
-    // ~1.3 s of pinned samples -> run-up hop (fires on any tick; dec is a
-    // plain field read every step, no need to wait for a decision refresh).
+    // ~0.5 s of pinned samples -> run-up hop (6 consecutive samples at
+    // 5-tick cadence; fires on any tick; dec is a plain field read every
+    // step, no need to wait for a decision refresh).
+    // Margin check at 5-tick sampling: walking nets ~83px over the 4-sample
+    // window (250px/s) vs pinned <=40 (wall-face clamp; drive/eject
+    // oscillation only ~32) — the discrimination that stops hop-fests holds.
     // A plain vertical hop fails: side-solidarity ejects the climber at the
     // wall face (vx zeroed every tick until the feet clear the top, which the
     // jump apex can't reach for tall columns) -> the run-up sets the vault.
-    if ((this.stuckT || 0) > 8) {
+    if ((this.stuckT || 0) > 5) {
       this.dec = { mode: 'hop', dir: (this.dec.dir || dir || f.facing) };
       this.hopT = 0;
       this.stuckT = 0;
