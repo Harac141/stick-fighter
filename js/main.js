@@ -559,7 +559,7 @@ class FightScene extends Phaser.Scene {
     this.effects = [];        // swipes + sparks (aged in renderAll)
     this.fxStop = 0;          // impact-frame (hit-stop) countdown
     this.fxFlash = 0;         // heavy-hit impact flash frames
-    this.fxFlashColor = 0xffffff;
+    this.fxFlashColor = 0x000000;   // black screen-dip (user: white was wrong)
 
     // ---- STYLE (roguelike v1): ?style=1 arms the power system. ----
     const _styleOn = new URLSearchParams(location.search).get('style') === '1';
@@ -1078,7 +1078,13 @@ class FightScene extends Phaser.Scene {
     // 3/4/6/8 frames for light/medium/heavy/massive. Freezing the frame CLOCK
     // (not just visuals) is what sells "that landed".
     this.fxStop = Math.max(this.fxStop || 0, d < 6 ? 3 : d < 12 ? 4 : d < 18 ? 6 : 8);
-    if (d >= 10) { this.fxFlash = 3; this.fxFlashColor = energy ? 0xff5a5a : 0xffffff; }
+    if (d >= 10) {
+      this.fxFlash = 3;
+      // Black needs ~3x the white alpha to read on the dark navy stage
+      // (vision-audited: 0.16 black was imperceptible). Red stays subtle.
+      this.fxFlashColor = energy ? 0xff5a5a : 0x000000;
+      this.fxFlashAlpha = energy ? 0.16 : 0.5;
+    }
   }
 
   // Advance + draw every effect. Effects age on RENDER (presentation only —
@@ -1459,7 +1465,7 @@ class FightScene extends Phaser.Scene {
       const fg = this.fxFlashGfx;
       fg.clear();
       if (this.fxFlash > 0) {
-        fg.fillStyle(this.fxFlashColor, 0.16 * (this.fxFlash / 3));
+        fg.fillStyle(this.fxFlashColor, (this.fxFlashAlpha || 0.16) * (this.fxFlash / 3));
         fg.fillRect(0, 0, 1280, 720);
         this.fxFlash--;   // renderAll runs exactly once per frame
       }
