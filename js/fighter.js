@@ -703,11 +703,11 @@ class Fighter {
     // EITHER attack key is answered by its EQUIPPED move for that
     // key+direction slot (J/W+J/S+J + K/W+K/S+K). Air moves and dash attacks
     // are never swapped (they returned above); p2 and the katana starter are
-    // untouched. A 'none'-direction ability activates inside selectFor and
-    // spends the press. LOADOUT_VANILLA falls through to the tail below (the
+    // untouched. LOADOUT_VANILLA falls through to the tail below (the
     // classic 'jab' def — its chain + heavy-cancel live there). Returning
     // null means the press is spent with NO attack (unaffordable — never a
-    // silent fallback to the free move).
+    // silent fallback to the free move). Hand POWERS (kind:'ability', e.g.
+    // TIME SLOW) are NOT slot moves — they fire on Q/R via fireHand.
     if ((H || L) && !this.ai && this.inputKey === 'p1' && this.weapon !== 'katana'
         && this.scene.loadout) {
       const slot = (H ? 'K_' : 'J_') + (input.up ? 'up' : (input.down ? 'down' : 'neutral'));

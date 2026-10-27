@@ -575,6 +575,12 @@ class FightScene extends Phaser.Scene {
         const kLo1 = kb.addKey('E'), kLo2 = kb.addKey('I');
         kLo1.on('down', () => { if (this.loadout) this.loadout.toggle(); });
         kLo2.on('down', () => { if (this.loadout) this.loadout.toggle(); });
+        // HAND POWERS: Q = left-hand SPECIAL, R = right-hand SPECIAL (base
+        // mode only — ?style=1 owns Q/R for bullet time/drain and excludes
+        // the loadout entirely, so these keys never collide).
+        const kH1 = kb.addKey('Q'), kH2 = kb.addKey('R');
+        kH1.on('down', () => { if (this.loadout && !this.loadout.open) this.loadout.fireHand('left'); });
+        kH2.on('down', () => { if (this.loadout && !this.loadout.open) this.loadout.fireHand('right'); });
       }
     }
     if (_styleOn) {
@@ -1218,15 +1224,31 @@ class FightScene extends Phaser.Scene {
     // STYLE gate (roguelike v1): full speed unless the style manager is
     // holding the world (offer/death = 0) or bullet time is draining (f).
     const st = this.style;
-    const gate = st ? (st.pending === 'offer' ? 0 : (st.slowActive ? st.slowFactor : 1)) : 1;
+    // TIME SLOW (loadout hand power): the SAME gate the roguelike's bullet
+    // time uses (style.js STYLE_T.slowFactor) — non-player bodies run AI
+    // think/clocks/hitboxes on HOLD and integrate at dt*factor (stepFighter's
+    // slow-mo branch); PLAYERS step at full speed (stepFighter's player
+    // branch only hangs at gate<=0, reserved for offers); bullets integrate
+    // at the gate rate below, so they hang mid-flight like the roguelike.
+    // ?style=1 excludes the loadout entirely, so st and lo never coexist.
+    const lo = this.loadout;
+    const gate = st ? (st.pending === 'offer' ? 0 : (st.slowActive ? st.slowFactor : 1))
+      : (lo && lo.slowT > 0 ? window.LOADOUT_T.slowFactor : 1);
     // 'dead' overlay deliberately runs at gate 1 (ragdoll plays out under the
     // text); only the wave offer truly hangs the world.
     const i1 = this.sampleInput('p1');
     const i2 = this.sampleInput('p2');
     this.lastIn = { p1: i1, p2: i2 };   // press-intent for separateBodies
-    for (const f of this.fighters) this.stepFighter(f, f.inputKey === 'p2' ? i2 : i1, gate);
+    // TIME SLOW: everyone steps with the shared gate — players at full speed,
+    // mooks slowed (see stepFighter: gate<1 holds AI/clocks/hitboxes and
+    // integrates physics at dt*gate). Single owner per body (mooks = manual
+    // integrator, ragdoll idiom) so there is no arcade-resume pop when the
+    // slow ends — the roguelike's bullet time, unchanged.
+    for (const f of this.fighters) {
+      this.stepFighter(f, f.inputKey === 'p2' ? i2 : i1, gate);
+    }
     if (st) st.tick();
-    if (this.loadout) this.loadout.tick();   // FURY clock (energy is combat-earned only)
+    if (this.loadout) this.loadout.tick();   // TIME SLOW clock + flashes
     if (this.eng && gate === 1) this.eng.tick();   // handoff cooldown pace
     if (gate === 1) this.checkTriggers();          // progress-gated spawn zones (levels)
     this.resolveHits();
@@ -1244,6 +1266,8 @@ class FightScene extends Phaser.Scene {
       }
       if (boxes.length) this.swatBullets(boxes);
     }
+    // Bullets integrate at the gate rate (roguelike bullet-time semantics:
+    // during TIME SLOW a fired shot hangs mid-air; no arcade state involved).
     this.stepBullets(gate);
     this.separateBodies();
     // resolveGround ALWAYS runs: during bullet time the player still moves
@@ -1508,9 +1532,9 @@ class FightScene extends Phaser.Scene {
       g.fillStyle(0x000000, 0.55); g.fillRect(pad - 3, ey - 3, eW + 6, eH + 6);
       g.fillStyle(0x1c2230, 1); g.fillRect(pad, ey, eW, eH);
       g.fillStyle(0x3fd6b6, 1); g.fillRect(pad, ey, eW * lo.energy / T.energyMax, eH);
-      if (lo.buffT > 0) {  // FURY: gold sliver = remaining buff time
-        g.fillStyle(0xf2b705, 1);
-        g.fillRect(pad, ey + eH + 2, eW * lo.buffT / T.buffFrames, 3);
+      if (lo.slowT > 0) {  // TIME SLOW: sliver = remaining slow time
+        g.fillStyle(0x9fd8ff, 1);
+        g.fillRect(pad, ey + eH + 2, eW * lo.slowT / (window.LOADOUT_T.slowFrames || 300), 3);
       }
       if (lo.flashT > 0) {
         if (!this._loFlash) {

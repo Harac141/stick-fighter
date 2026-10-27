@@ -43,8 +43,14 @@ const LOADOUT_T = {
   // disadvantageous") — energy is earned ONLY by landing hits and kills.
   energyPerHit: 2,      // player attack lands
   energyPerKill: 12,
-  // Dormant ability scaffold (Fury removed; a future time-stop will reuse):
-  buffCost: 25, buffDrain: 4, buffFrames: 600, buffMult: 1.25,
+  // TIME SLOW (user spec): "a 5-second time slow that takes 75 energy
+  // (same effect as you already coded in the roguelike)". Sim steps, and
+  // the world-speed multiplier — deliberately the SAME numbers as the
+  // roguelike's bullet time (STYLE_T.slowFactor[1] = 0.25): mooks run all
+  // their systems at gate 0.25 (AI think / attack clocks HOLD, physics
+  // integrates at dt*0.25 — stepFighter's slow-mo branch), player full.
+  slowFrames: 300,
+  slowFactor: 0.25,
 };
 
 // id -> definition. Attacks copy an existing CFG.attacks entry (frame data,
@@ -66,6 +72,16 @@ const LOADOUT_DEFS = [
   { id: 'powerJab',   set: 'POWER-UP', name: 'POWER JAB',      dir: 'neutral', cfg: 'lo_powerJab',   energy: 30 },
   { id: 'powerUpper', set: 'POWER-UP', name: 'POWER UPPERCUT', dir: 'up',      cfg: 'lo_powerUpper', energy: 30 },
   { id: 'powerSweep', set: 'POWER-UP', name: 'POWER SWEEP',    dir: 'down',    cfg: 'lo_powerSweep', energy: 30 },
+  // Stunlock jab (user spec): "an attack that puts an enemy into stunlock
+  // for one second" — a fast copy of the mob jab whose knock LOCKS the
+  // target in hitstun for a full second (60 sim steps) with almost no
+  // knockback: they stand there, clocks stopped, free combo window.
+  { id: 'stunJab',    set: 'POWER-UP', name: 'STUN JAB',       dir: 'neutral', cfg: 'lo_stunJab',    energy: 25 },
+  // ABILITIES (kind:'ability'): NOT slotted on attack keys — each HAND can
+  // hold one (menu HANDS panel; Q fires the left hand, R the right).
+  // dir:'none' but the pool hides kind==='ability' from slot equipping.
+  { id: 'timeSlow',   set: 'SPECIAL',  name: 'TIME SLOW',      dir: 'none',    kind: 'ability',
+    effect: 'timeslow', energy: 75 },
 ];
 
 // Slot ids are '<KEY>_<dir>'. The KEY half is which attack button feeds the
@@ -85,13 +101,25 @@ class LoadoutManager {
   constructor(scene) {
     this.scene = scene;
     this.energy = LOADOUT_T.energyStart;
-    this.buffT = 0;                   // dormant ability scaffold (see LOADOUT_T)
     this.open = false;
     this.flash = ''; this.flashT = 0; // e.g. 'LOW ENERGY' blip
     // Equip: slot id -> def id. Load saved build (validated against defs);
     // migrate the legacy 3-slot (K-only, keys 'neutral'/'up'/'down') save
     // format into the K column.
     this.equip = Object.assign({}, LOADOUT_DEFAULTS);
+    // HAND POWERS (user: "two powers, one per hand... add something in the
+    // menu to select which hand is holding what power"): each hand holds one
+    // kind:'ability' SPECIAL, fired with Q (left) / R (right). Abilities are
+    // NOT slotted on the attack keys — the slot pool hides them.
+    this.hands = { left: null, right: null };
+    this.slowT = 0;                 // TIME SLOW sim-steps remaining
+    try {
+      const h = JSON.parse(localStorage.getItem('stickfight.hands') || 'null');
+      if (h) for (const s of ['left', 'right']) {
+        const d = LOADOUT_DEFS.find((x) => x.id === h[s] && x.kind === 'ability');
+        if (d) this.hands[s] = d.id;
+      }
+    } catch (e) { /* private mode */ }
     try {
       const saved = JSON.parse(localStorage.getItem('stickfight.loadout') || '{}');
       const migrated = {};
@@ -123,6 +151,11 @@ class LoadoutManager {
       CFG.attacks.lo_powerJab   = copy('jab1',     { damage: 14, loCost: 30, fx: 'energy' });
       CFG.attacks.lo_powerUpper = copy('uppercut', { damage: 12, loCost: 30, fx: 'energy' });
       CFG.attacks.lo_powerSweep = copy('sweep',    { damage: 14, loCost: 30, fx: 'energy' });
+      // STUN JAB: mob-jab frames (fast), chip damage, almost no knockback,
+      // and a ONE-SECOND hitstun lock (60 steps). The victim's clocks stop;
+      // the free-window combo is the payoff. Red fx like the rest of the set.
+      CFG.attacks.lo_stunJab    = copy('jab',      { damage: 4, loCost: 25, fx: 'energy',
+                                                     knock: { x: 30, y: -10, hitstun: 60 } });
     }
   }
 
@@ -134,9 +167,8 @@ class LoadoutManager {
   // press with no attack (unaffordable / ability fired).
   selectFor(slotId, p1) {
     const d = this.def(this.equip[slotId]);
-    if (!d) return null;
+    if (!d || d.kind === 'ability') return null;   // abilities fire from HANDS, not slots
     if (d.vanilla) return LOADOUT_VANILLA;
-    if (d.kind === 'ability') { this.tryActivate(d); return null; }
     const cost = d.energy || 0;
     if (this.energy < cost) { this.setFlash('LOW ENERGY — ' + d.name + ' (' + cost + ')'); return null; }
     return d.cfg;
@@ -149,26 +181,28 @@ class LoadoutManager {
     if (d && d.energy) { this.energy = Math.max(0, this.energy - d.energy); this._menuEnergy(); }
   }
 
-  // Dormant ability path (Fury removed; time-stop will use this shape).
-  tryActivate(d) {
-    if (this.buffT > 0) return;                       // already active; no refresh
-    if (this.energy < d.energy) { this.setFlash('LOW ENERGY — ' + d.name + ' (' + d.energy + ')'); return; }
-    this.energy -= d.energy;
-    this.buffT = LOADOUT_T.buffFrames;
-    if (this.scene.p1) this.scene.p1.loadoutDmgMult = LOADOUT_T.buffMult;
-    this.setFlash(d.name + '!');
-    this._menuEnergy();
+  // ---- HAND POWERS (kind:'ability') ----------------------------------------
+  // Q = left hand, R = right hand (scene key handlers call fireHand).
+  fireHand(side) {
+    const d = this.def(this.hands[side]);
+    if (!d) { this.setFlash('NO POWER IN ' + side.toUpperCase() + ' HAND (E/I menu)'); return; }
+    if (d.effect === 'timeslow') {
+      if (this.slowT > 0) { this.setFlash('TIME IS ALREADY SLOWED'); return; }
+      if (this.energy < d.energy) { this.setFlash('LOW ENERGY — ' + d.name + ' (' + d.energy + ')'); return; }
+      this.energy -= d.energy;
+      this.slowT = LOADOUT_T.slowFrames;
+      this.setFlash('TIME SLOW!');
+      // Same visual language as the roguelike's bullet time + the impact
+      // FX layer: a black screen-dip marks the slow taking hold.
+      this.scene.fxFlash = 3; this.scene.fxFlashColor = 0x000000; this.scene.fxFlashAlpha = 0.5;
+      this._menuEnergy();
+      return;
+    }
+    // Future abilities dispatch here (see the SPECIALS idea list).
   }
 
   tick() {
-    const T = LOADOUT_T;
-    if (this.buffT > 0) {
-      this.buffT--;
-      this.energy = Math.max(0, this.energy - T.buffDrain / 60);
-      if (this.energy <= 0) this.buffT = 0;           // bar dry: buff ends early
-      if (this.scene.p1) this.scene.p1.loadoutDmgMult = LOADOUT_T.buffMult;
-      if (this.buffT === 0 && this.scene.p1) this.scene.p1.loadoutDmgMult = 1;
-    }
+    if (this.slowT > 0) this.slowT--;   // scene reads slowT for the gate
     if (this.flashT > 0) this.flashT--;
   }
 
@@ -191,7 +225,7 @@ class LoadoutManager {
       st.textContent = `
         #lo-menu{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
           background:rgba(5,6,12,.74);z-index:60;font-family:monospace;color:#cdd6f4;}
-        #lo-menu .lo-card{width:720px;max-width:94vw;background:#101423;border:1px solid #2a3a63;
+        #lo-menu .lo-card{width:900px;max-width:96vw;background:#101423;border:1px solid #2a3a63;
           border-radius:12px;padding:20px 24px;box-shadow:0 0 40px rgba(0,0,0,.6);}
         #lo-menu .lo-head{display:flex;justify-content:space-between;font-size:18px;letter-spacing:3px;}
         #lo-menu .lo-sub{color:#5b6a94;font-size:11px;margin:2px 0 10px;letter-spacing:1px;}
@@ -235,11 +269,19 @@ class LoadoutManager {
                  '  <span class="lo-name" id="lo-name-' + s + '"></span>' +
                  '  <span class="lo-tag" id="lo-tag-' + s + '"></span></div>').join('') +
                '</div>').join('') +
+        '    <div class="lo-col"><div class="lo-colh">HAND POWERS</div>' +
+        '      <div class="lo-row" data-slot="hand_left"><span class="lo-key">Q</span>' +
+        '        <span class="lo-name" id="lo-name-hand_left"></span>' +
+        '        <span class="lo-tag" id="lo-tag-hand_left"></span></div>' +
+        '      <div class="lo-row" data-slot="hand_right"><span class="lo-key">R</span>' +
+        '        <span class="lo-name" id="lo-name-hand_right"></span>' +
+        '        <span class="lo-tag" id="lo-tag-hand_right"></span></div>' +
+        '    </div>' +
         '    <div class="lo-poolwrap"><div class="lo-colh">CHOOSE \u2014 <span id="lo-pool-key"></span></div>' +
         '      <div id="lo-pool"></div></div>' +
         '  </div>' +
-        '  <div class="lo-foot">click a slot then a move \u00b7 1-6 select slot \u00b7 \u2191\u2193 + Enter pick \u00b7 ESC / E / I resume \u00b7' +
-        ' air & dash attacks never swap \u00b7 CLASSIC = free, POWER-UP burns energy (earned by fighting)</div>' +
+        '  <div class="lo-foot">click a slot then a move \u00b7 1-6 slots \u00b7 7/8 hands \u00b7 \u2191\u2193 + Enter pick \u00b7 ESC / E / I resume \u00b7' +
+        ' air & dash attacks never swap \u00b7 CLASSIC = free, POWER-UP burns energy \u00b7 hand POWERS fire with Q / R</div>' +
         '  <button class="lo-resume" id="lo-resume">RESUME \u00a0(E / I / ESC)</button>' +
         '</div>';
       document.body.appendChild(menu);
@@ -292,7 +334,7 @@ class LoadoutManager {
   }
 
   select(slotId) {
-    if (LOADOUT_SLOTS.indexOf(slotId) < 0) return;
+    if (slotId !== 'hand_left' && slotId !== 'hand_right' && LOADOUT_SLOTS.indexOf(slotId) < 0) return;
     this.sel = slotId;
     this.cursor = 0;
     this._refresh();
@@ -302,8 +344,23 @@ class LoadoutManager {
   // slot -> def id map — would shadow a prototype method of the same name,
   // making menu clicks / Enter silently throw.)
   equipDef(defId) {
+    const isHand = this.sel === 'hand_left' || this.sel === 'hand_right';
+    if (isHand) {
+      const side = this.sel === 'hand_left' ? 'left' : 'right';
+      if (defId === 'none') {
+        this.hands[side] = null;
+      } else {
+        const d = LOADOUT_DEFS.find((x) => x.id === defId && x.kind === 'ability');
+        if (!d) return;
+        this.hands[side] = d.id;
+      }
+      try { localStorage.setItem('stickfight.hands', JSON.stringify(this.hands)); }
+      catch (e) { /* private mode */ }
+      this._refresh();
+      return;
+    }
     const dir = this.sel.split('_')[1];
-    const d = LOADOUT_DEFS.find((x) => x.id === defId && (x.dir === dir || x.dir === 'none'));
+    const d = LOADOUT_DEFS.find((x) => x.id === defId && (x.dir === dir || x.dir === 'none') && x.kind !== 'ability');
     if (!d) return;
     this.equip[this.sel] = d.id;
     try { localStorage.setItem('stickfight.loadout', JSON.stringify(this.equip)); }
@@ -319,6 +376,8 @@ class LoadoutManager {
     const k = ev.key, c = ev.keyCode;
     const n = Number(k);
     if (n >= 1 && n <= LOADOUT_SLOTS.length) { this.select(LOADOUT_SLOTS[n - 1]); return; }
+    if (k === '7') { this.select('hand_left'); return; }
+    if (k === '8') { this.select('hand_right'); return; }
     if (k === 'ArrowDown') { this.cursor++; this._renderPool(); return; }
     if (k === 'ArrowUp')   { this.cursor--; this._renderPool(); return; }
     if (k === 'Enter' || k === ' ') {
@@ -337,8 +396,14 @@ class LoadoutManager {
   }
 
   _pool() {
+    if (this.sel === 'hand_left' || this.sel === 'hand_right') {
+      // Hands carry kind:'ability' SPECIALS only (+ NONE to empty the hand).
+      return [{ id: 'none', name: '— EMPTY HAND —', set: '' }].concat(
+        LOADOUT_DEFS.filter((d) => d.kind === 'ability'));
+    }
     const dir = this.sel.split('_')[1];
-    return LOADOUT_DEFS.filter((d) => d.dir === dir || d.dir === 'none');
+    return LOADOUT_DEFS.filter((d) => d.dir === dir || d.dir === 'none')
+                       .filter((d) => d.kind !== 'ability');   // abilities = hands only
   }
 
   _refresh() {
@@ -350,8 +415,18 @@ class LoadoutManager {
         d ? d.set + '  \u00b7  ' + (d.energy ? d.energy + ' ENERGY' : 'FREE') : '';
       document.querySelector('.lo-row[data-slot="' + s + '"]').classList.toggle('sel', s === this.sel);
     }
+    for (const side of ['left', 'right']) {
+      const s = 'hand_' + side;
+      const d = this.def(this.hands[side]);
+      document.getElementById('lo-name-' + s).textContent = d ? d.name : '(empty)';
+      document.getElementById('lo-tag-' + s).textContent =
+        d ? (d.energy ? d.energy + ' ENERGY' : '') + '  \u00b7  ' + (side === 'left' ? 'Q' : 'R') + ' to fire' : '';
+      document.querySelector('.lo-row[data-slot="' + s + '"]').classList.toggle('sel', s === this.sel);
+    }
     const keyEl = document.getElementById('lo-pool-key');
-    if (keyEl) keyEl.textContent = SLOT_LABEL[this.sel] + ' \u2014 ' + (this.sel.startsWith('J') ? 'left hand' : 'right hand');
+    if (keyEl) keyEl.textContent = this.sel === 'hand_left' ? 'LEFT HAND — Q'
+      : this.sel === 'hand_right' ? 'RIGHT HAND — R'
+      : SLOT_LABEL[this.sel] + ' \u2014 ' + (this.sel.startsWith('J') ? 'left hand' : 'right hand');
     this._renderPool();
   }
 
@@ -360,12 +435,15 @@ class LoadoutManager {
     if (!wrap) return;
     const pool = this._pool();
     this.cursor = Math.min(Math.max(this.cursor, 0), pool.length - 1);
+    const isHand = this.sel === 'hand_left' || this.sel === 'hand_right';
+    const cur = isHand ? (this.hands[this.sel === 'hand_left' ? 'left' : 'right'] || 'none')
+                       : this.equip[this.sel];
     wrap.innerHTML = pool.map((d, i) =>
       '<div class="lo-opt' + (i === this.cursor ? ' cur' : '') +
-      (this.equip[this.sel] === d.id ? ' eq' : '') + '" data-def="' + d.id + '">' +
+      (cur === d.id ? ' eq' : '') + '" data-def="' + d.id + '">' +
       '  <span class="lo-name">' + d.name + '</span>' +
-      '  <span class="lo-tag">' + d.set + ' \u00b7 ' + (d.energy ? d.energy + ' ENERGY' : 'FREE') +
-      (d.dir === 'none' ? ' \u00b7 ANY SLOT' : '') + '</span></div>').join('');
+      '  <span class="lo-tag">' + d.set + (d.energy ? ' \u00b7 ' + d.energy + ' ENERGY' : '') +
+      (d.dir === 'none' && !isHand ? ' \u00b7 ANY SLOT' : '') + '</span></div>').join('');
   }
 
   _menuEnergy() {
