@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Keyframe Sheet — every frame of every move</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #10121a; overflow: auto; }
+    h3 { color: #8fa0c8; font: 13px monospace; margin: 8px 12px 0; }
+    #bar { font: 12px monospace; color: #cdd6f4; margin: 6px 12px; }
+    #bar button { font: 12px monospace; background: #1c2230; color: #cdd6f4;
+      border: 1px solid #2a3a63; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+    canvas { display: block; margin: 4px 12px; background: #08080c; }
+  </style>
+</head>
+<body>
+  <h3>KEYFRAMES — one cell per SIM FRAME (white=active, dim=startup/recovery, cyan=hitbox)</h3>
+  <div id="bar">
+    <button id="dl">DOWNLOAD PNG</button>
+    <span id="hint"></span>
+  </div>
+  <div id="sheet"></div>
+  <script>
+    window.__ERR = [];
+    window.onerror = function (msg, src, line) { window.__ERR.push(msg + ' @ ' + src + ':' + line); };
+  </script>
+  <script src="phaser.min.js"></script>
+  <script src="js/fighter.js?v=73b227e"></script>
+  <script src="js/keyframes.js?v=73b227e"></script>
+</body>
+</html>
