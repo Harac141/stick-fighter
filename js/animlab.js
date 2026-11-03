@@ -20,6 +20,7 @@ const LAB_ROWS = [
   { state: 'attack', name: 'uppercutH',  phase: (i) => i / 8 },
   { state: 'attack', name: 'sweep',      phase: (i) => i / 8 },
   { state: 'attack', name: 'hammerfist', phase: (i) => i / 8 },
+  { state: 'attack', name: 'sidekick',   phase: (i) => i / 8 },
   { state: 'attack', name: 'airjab',     phase: (i) => i / 8, air: true },
   { state: 'attack', name: 'axekick',    phase: (i) => i / 8, air: true },
   { state: 'attack', name: 'dashatk',    phase: (i) => i / 8 },
@@ -98,3 +99,16 @@ window.__LAB = new Phaser.Game({
   physics: { default: 'arcade', arcade: { debug: false } },
   scene: LabScene,
 });
+
+// ---- LIVE TUNING API (dev-loop: edit poses in the browser, not the file) ----
+// Fighter/CFG are script-lexical (NOT window properties), so the harness —
+// the only place that exists for this — exports the handles:
+//   window.__LABCFG.poseSidekick.thrustX = 44
+//   window.__LABRESET()                  re-renders every row from computePose
+// Iterate here until the pose reads right, THEN write the winning numbers
+// into CFG (js/fighter.js) and commit once.
+window.__LABCFG = Fighter.CFG;
+window.__LABRESET = () => { window.__LAB_READY = false;
+  window.__LAB.scene.getScene('lab').scene.restart(); };
+// Add a row without editing the file: __LABADD({state:'attack', name:'sidekick', phase:i=>i/8})
+window.__LABADD = (row) => { LAB_ROWS.push(row); window.__LABRESET(); };

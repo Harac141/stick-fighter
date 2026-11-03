@@ -65,6 +65,9 @@ const LOADOUT_DEFS = [
   { id: 'uppercut',   set: 'CLASSIC', name: 'UPPERCUT',        dir: 'up',      cfg: 'uppercut' },
   { id: 'sweep',      set: 'CLASSIC', name: 'SWEEP',           dir: 'down',    cfg: 'sweep' },
   { id: 'heavy',      set: 'CLASSIC', name: 'HEAVY',           dir: 'neutral', cfg: 'heavy' },
+  // Side kick (user request): functionally the neutral heavy (same frame
+  // data/damage/knock) with a kick animation; momentum tuned for the animation.
+  { id: 'sidekick',   set: 'CLASSIC', name: 'SIDE KICK',       dir: 'neutral', cfg: 'sidekick' },
   { id: 'uppercutH',  set: 'CLASSIC', name: 'HEAVY UPPERCUT',  dir: 'up',      cfg: 'uppercutH' },
   { id: 'hammerfist', set: 'CLASSIC', name: 'HAMMERFIST',      dir: 'down',    cfg: 'hammerfist' },
   // POWER-UP set (user spec): "copies of the J moves that deal as much

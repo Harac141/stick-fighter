@@ -1056,7 +1056,10 @@ class FightScene extends Phaser.Scene {
       // presentation-side read of renderPose, physics never sees it (user:
       // "have it track with the fist on jabs and heavies"). Falls back to
       // the static hitbox anchor if the limb is gone (attacker KO'd mid-swing).
+      // atk.limb overrides which renderPose key IS the weapon (kicks: the
+      // heel, not the fist — a kick whose streak rides the hand looks broken).
       src: (type === 'arc') ? null : attacker,
+      limbKey: atk.limb || (type === 'chop' ? 'footB' : 'handB'),
       t: 0, life: energy ? 9 : 6,                        // energy arcs linger a touch
     });
   }
@@ -1123,7 +1126,7 @@ class FightScene extends Phaser.Scene {
           let ax = e.x, ay = e.y;
           const s = e.src;
           if (s && s.renderPose && !s.gone) {
-            const limb = e.type === 'chop' ? s.renderPose.footB : s.renderPose.handB;
+            const limb = s.renderPose[e.limbKey || (e.type === 'chop' ? 'footB' : 'handB')];
             if (limb) { ax = limb.x; ay = limb.y; }
           }
           const len = (e.rOut - e.rIn) * grow + 10;

@@ -46,6 +46,21 @@ const CFG = {
   jump:     { velocity: -920, cutMultiplier: 0.55 },   // variable jump height (v3: -640=108px apex couldn't clear platforms; -920 = ~223px full clears the 200px crates, ~85px tap hop)
   dash:     { burstSpeed: 560, burstFrames: 10, sprintSpeed: 450, cooldown: 26 },
   body:     { width: 40, height: 92 },
+  // Pose tunables for the newest move (dev-loop fix — user: making moves was
+  // "messy and requires a lot of fiddling after each minor change"). The
+  // sidekick pose branch reads THESE numbers, so the browser harness can
+  // patch them live (Fighter.CFG.poseSidekick.thrustX = 56) and screenshot a
+  // frozen frame: TUNE IN THE BROWSER, then write the winning values to file
+  // once. This is the pattern to follow for future pose work.
+  poseSidekick: {
+    chamberX: 10, chamberH: 30,   // chamber foot offset fwd / height above feet
+    plantX: 18,                   // planted foot offset from hip
+    leanCoil: -0.10, leanKick: 0.18,
+    hipChamber: 40, hipKick: 37, hipSink: 32,
+    thrustX: 44, thrustY: 16,     // full-extension heel: forward / height above feet
+                                  // (44/16 over hip 33 = 47px < 48 leg: NO shin
+                                  // stretch — tuned live via __LABCFG, animlab)
+  },
   // MAX GROUNDED FOOT OFFSET from hip is sqrt(48^2 - 37.5^2) ~ 30px (leg
   // 48 long, hip ~37.5 high) — so duty*stride must stay <= ~56 or the shin
   // visibly stretches at toe-off. That caps honest walk cadence here.
@@ -113,6 +128,23 @@ const CFG = {
       box:   { x: 30, y: 4, w: 58, h: 26 },       // punch a bit") — was 20; the
       knock: { x: 520, y: -360, hitstun: 26 },    // post-attack cooldown:14 stays,
       cooldown: 14,                               // so whiff punish window ~10f shorter
+    },
+    // SIDE KICK — user: "functionally about the same as the neutral heavy but
+    // with a side kick animation. You can edit the momentum if it makes the
+    // animation make more sense." Same frame data / damage / knock as heavy;
+    // lunge DROPPED 600->430: a punch can skate forward on the fist, a kick
+    // plants and pushes off — 600 read as skating (both feet sliding while
+    // one leg is in the air). scriptLegs: the pose owns the feet (same
+    // exemption as 'dash' / air moves), so no gait cycle under the kick.
+    sidekick: {
+      startup: 9, active: 5, recovery: 14,
+      damage: 14, lunge: 430, scriptLegs: true,
+      pose: 'sidekick', limb: 'footA',            // streak rides the KICK foot
+                                                  // (NB computePose FLIPS F/B on
+                                                  // return: local footB -> footA)
+      box:   { x: 32, y: -2, w: 62, h: 24 },      // hip-line heel thrust
+      knock: { x: 520, y: -360, hitstun: 26 },
+      cooldown: 14,
     },
     // ---- KATANA starter character (user: "a character with a sword", just
     // neutral light + heavy, both block bullets). Neutral-only: selectAttack
@@ -1557,7 +1589,7 @@ class Fighter {
     // Attacks in the air or the dash check have SCRIPTED legs — the gait
     // layer must not take the feet over mid-move.
     const gaiting = mode !== 'none'
-      && !(atkNow && (atkNow.air || this.airborne || atkNow.pose === 'dash'));
+      && !(atkNow && (atkNow.air || this.airborne || atkNow.pose === 'dash' || atkNow.scriptLegs));
 
     // Per-state torso (and legs when NOT gaiting).
     switch (this.state) {
@@ -1616,6 +1648,47 @@ class Fighter {
           lean = act ? -0.12 : 0.06;
           footF = act ? P(f * 36, feetY - 2) : P(f * 12, feetY - 44);
           footB = P(-f * (act ? 10 : 6), feetY - (act ? 4 : 0));
+        } else if (atk.pose === 'sidekick') {    // SIDE KICK: chamber -> heel thrust
+          // Chamber->thaw->snap is the kick grammar. Rear foot (the kick leg
+          // — front foot stays the planted one) loads to the knee line, then
+          // the HEEL extends level through the hip toward the box; the hip
+          // DROPS a little over the plant (kicks come down into the target,
+          // and it keeps the hip above the planted foot — the blendPose
+          // hip-clamp needs hip >= standing foot - 20, and a raised kick foot
+          // is legitimate there, see the cartwheel lesson).
+          // Numbers live in CFG.poseSidekick so the browser harness can tune
+          // them live (see the CFG comment) instead of edit-reload-fiddle.
+          const S = CFG.poseSidekick;
+          const CHAMBER_TOP = 8 + S.chamberH;    // chamber-end foot height (continuity with act start)
+          if (fr <= atk.startup) {
+            const k = fr / Math.max(1, atk.startup);
+            const e = k * k * (3 - 2 * k);
+            lean = 0.06 + S.leanCoil * e;                    // slight back-pitch loads
+            hipY = feetY - (S.hipChamber - 3 * e);
+            footF = P(f * (14 + 4 * e), feetY);              // plant spreads a touch
+            footB = P(f * (S.chamberX - 2 * e), feetY - (8 + S.chamberH * e)); // chamber to the hip line
+          } else if (act) {
+            const ka = (fr - atk.startup) / Math.max(1, atk.active);
+            const e = 1 - (1 - ka) * (1 - ka);              // easeOut: off fast, hold at full
+            lean = -0.04 + S.leanKick * e;                  // pitch INTO the kick
+            hipY = feetY - (S.hipKick - (S.hipKick - S.hipSink) * e);  // sink over the plant
+            // Plant TRAILS as the lunge drives forward (a fixed offset = the
+            // planted foot skating with the hip — half of the "skating" feel).
+            footF = P(f * (S.plantX - 10 * e), feetY);
+            footB = P(f * (S.chamberX - 2 + (S.thrustX - S.chamberX + 2) * e),
+                      feetY - (CHAMBER_TOP - (CHAMBER_TOP - S.thrustY) * e)); // heel thrusts fwd+level
+          } else {
+            const kk = Math.min(1, (fr - atk.startup - atk.active) / Math.max(1, atk.recovery * 0.7));
+            const e = kk * kk * (3 - 2 * kk);
+            lean = (S.leanKick - 0.04) - (S.leanKick - 0.04) * e;
+            hipY = feetY - (S.hipSink + (S.hipChamber - 3 - S.hipSink) * e);  // rise to stance
+            footF = P(f * (S.plantX - 10 + 4 * e), feetY);
+            // The kick foot comes DOWN and BACK — landing behind the hip
+            // (toward the idle rear-foot at -12) so exiting to idle doesn't
+            // drag a forward-planted foot backward (moonwalk slide).
+            footB = P(f * (S.thrustX - (S.thrustX + 12) * e),
+                      feetY - S.thrustY * (1 - e)); // leg drops to plant behind hip
+          }
         } else if (atk.pose === 'dash') {       // shoulder: lunge, trail leg flat
           lean = 0.34;
           footF = P(f * 24, feetY - (act ? 6 : 0)); footB = P(-f * 34, feetY - (act ? 12 : 2));
@@ -1789,6 +1862,24 @@ class Fighter {
       } else if (atk.pose === 'airjab') {         // short sharp forward poke
         if (act) { handF = P(f * 30, feetY - 64); handB = P(-f * 10, feetY - 66); }
         else { handF = P(f * 10, feetY - 62); handB = P(-f * 12, feetY - 64); }
+      } else if (atk.pose === 'sidekick') {      // arms COUNTER the kick (Taekwondo
+        // side kick: lead hand drives forward-down as the rear leg comes up,
+        // rear hand pulls back to the hip — no punching arm during the kick).
+        if (fr <= atk.startup) {
+          const k = fr / Math.max(1, atk.startup);
+          handF = P(f * (6 - 8 * k), feetY - 62);           // hands load back
+          handB = P(-f * (10 + 4 * k), feetY - 60);
+        } else if (act) {
+          const ka = (fr - atk.startup) / Math.max(1, atk.active);
+          const e = 1 - (1 - ka) * (1 - ka);
+          handF = P(f * (2 + 20 * e), feetY - (62 + 8 * e));   // lead hand spears fwd+up
+          handB = P(-f * (14 + 8 * e), feetY - (58 - 4 * e));  // rear hand rips back
+        } else {
+          const kk = Math.min(1, (fr - atk.startup - atk.active) / Math.max(1, atk.recovery * 0.7));
+          const e = kk * kk * (3 - 2 * kk);
+          handF = P(f * (22 - 8 * e), feetY - (70 - 6 * e));   // settle to guard
+          handB = P(-f * (22 - 10 * e), feetY - (54 + 8 * e));
+        }
       } else if (atk.pose === 'finisher') {       // overhand: rear hand arcs OVER from behind the head
         if (fr <= atk.startup) {
           handF = P(-f * 16, feetY - 78); handB = P(f * 4, feetY - 60);   // coil high-back, lead hand guards
