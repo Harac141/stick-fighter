@@ -103,7 +103,9 @@ class SheetScene extends Phaser.Scene {
         // The damage box, truthfully (cyan). Center = body center above feet.
         if (isActive && atk.box) {
           const bx = atk.box;
-          const ccx = cx + fac * bx.x, ccy = cy - 46 + bx.y;   // 46 = body.height/2
+          // CENTER = x + box.x + w/2 (see __KFAUDIT comment: box.x is the
+          // LEFT-edge offset, box.y is the center height).
+          const ccx = cx + fac * (bx.x + bx.w / 2), ccy = cy - 46 + bx.y;
           g.lineStyle(1.5, 0x39d0ff, 0.95);
           g.strokeRect(ccx - bx.w / 2, ccy - bx.h / 2, bx.w, bx.h);
           g.fillStyle(0x39d0ff, 0.12);
@@ -147,11 +149,103 @@ window.__KFRESET = () => { window.__KF_READY = false;
   window.__KF.scene.getScene('sheet').scene.restart(); };
 // __KFSET([['sidekick',false],['heavy',false]]) then __KFRESET() = one-move sheet.
 
-// Download the whole sheet as a single PNG sprite sheet (user request).
+// ---- Download the whole sheet as a single PNG sprite sheet (user request).
 document.getElementById('dl').onclick = () => {
   const cv = document.querySelector('#sheet canvas');
   const a = document.createElement('a');
   a.download = 'stickfight-keyframes.png';
   a.href = cv.toDataURL('image/png');
   a.click();
+};
+
+// ---- THE VERIFIER (user: "when I identify something and tell you to fix
+// it, you don't know when it's fixed"). __KFAUDIT() answers that in numbers,
+// so a claimed fix can be CONFIRMED, not vibe-checked. Two parts per move:
+//  (A) LIMB-ON-BOX: the striking limb (atk.limb, default fist handB / kick
+//      footB — computePose flips local F/B) must sit INSIDE the damage box
+//      on at least one active frame, and report its worst distance. Vision
+//      once blessed a kick whose heel passed 20-30px UNDER its own box;
+//      this catches that class exactly.
+//  (B) PIXEL: cyan box pixels must exist on exactly the publishing frames
+//      (mirrors tickAttack: plain window, hitFrames pairs, gun fire frame).
+// Gate: every damaging move passes (A) and every frame passes (B).
+window.__KFAUDIT = () => {
+  const A = Fighter.CFG.attacks;
+  const cv = document.querySelector('#sheet canvas');
+  const ctx = cv.getContext('2d');
+  const TOP=46, ROW_H=138, CELL_W=92, CELL_H=122;
+  const rows = [];
+  function activeBox(atk, f) {
+    if (atk.hitFrames) { for (const hf of atk.hitFrames) if (f>=hf && f<=hf+1) return true; return false; }
+    if (atk.fire) return f === (atk.aimLock||atk.startup)+1;
+    return f>atk.startup && f<=atk.startup+atk.active;
+  }
+  const list = [['jab',0],['jab1',0],['jab2',0],['heavy',0],['sidekick',0],
+                ['uppercut',0],['uppercutH',0],['sweep',0],['hammerfist',0],
+                ['axekick',1],['airjab',1],['dashatk',0],['katLight',0],['katHeavy',0],['shoot',0]];
+  const scene = window.__KF.scene.getScene('sheet');
+  let allPass = true;
+  list.forEach(([name, air], rI) => {
+    const atk = A[name]; if (!atk) { rows.push({name, fail:'missing'}); allPass=false; return; }
+    const total = atk.startup + atk.active + atk.recovery + (atk.fire?1:0);
+    // (A) limb-on-box (guns aim-and-fire: no limb check)
+    let limbOk = 'n/a', worstD = null;
+    if (!atk.fire && atk.box) {
+      // computePose FLIPS F/B: pose.footA = LOCAL footB, pose.footB = LOCAL
+      // footF. sweep/axe extend the LOCAL FRONT foot (-> pose.footB, the same
+      // mapping main.js's chop streak uses); sidekick kicks with the LOCAL
+      // REAR foot (-> pose.footA) and says so via atk.limb. AUTO default =
+      // footB (the common case); atk.limb overrides. (This flip bit the
+      // verifier too: auditing the sweep's REAR planted leg gave dx=65.)
+      const kick = (atk.pose==='sweep'||atk.pose==='axe'||atk.pose==='sidekick');
+      const key = atk.limb || (kick ? 'footB' : 'handB');
+      let hit = false, worst = 1e9, cand = [];
+      for (let f=atk.startup+1; f<=atk.startup+atk.active + (atk.hitFrames?2:0); f++) {
+        if (!activeBox(atk, f)) continue;
+        const p = new Fighter(scene, 400, 500, 1, 0xffffff);
+        p.state='attack'; p.currentAttack=name; p.attackFrame=f;
+        if (air){ p.airborne=true; p.body.velocity.y=120; }
+        const q = p.computePose(400,500);
+        const limb = q[key]; if (!limb) continue;
+        const bcx = 400 + atk.box.x + atk.box.w/2, bcy = (500 - 46) + atk.box.y;
+        const dx = Math.abs(limb.x-bcx), dy = Math.abs(limb.y-bcy);
+        worst = Math.min(worst, Math.hypot(dx, dy));
+        cand.push({ f, dx, dy, reach: Math.hypot(limb.x-q.hip.x, limb.y-q.hip.y) });
+      }
+      // NOT "inside on ANY active frame": a mis-heighted limb TRANSITS the
+      // box corner (the heel-low bug slipped through that rule). The strike
+      // must land on the box AT FULL EXTENSION — the frame where the limb is
+      // farthest from the hip (max reach): every strike's whole point is that
+      // frame, and a clip mid-flight is not contact.
+      if (cand.length) {
+        const ext = cand.reduce((a,b) => b.reach > a.reach ? b : a);
+        hit = ext.dx <= atk.box.w/2 + 18 && ext.dy <= atk.box.h/2 + 12;
+      }
+      limbOk = hit ? 'pass' : 'FAIL'; worstD = +worst.toFixed(1);
+      if (!hit) allPass = false;
+    }
+    // (B) pixel audit vs publish rules
+    let pixFail = 0;
+    const rowStart = TOP + rI*ROW_H, gy = rowStart + CELL_H - 18;
+    for (let f=1; f<=total; f++) {
+      const cx = 30 + (f-1)*CELL_W + CELL_W/2 - 4;
+      let cyan = 0;
+      if (atk.box) {
+        // THE sheet's box rect — and THE ONLY correct one (attackWorldBox:
+        // facing 1 -> LEFT edge at x+box.x, so CENTER is x+box.x+w/2; box.y
+        // IS the center height). Drawing/auditing at x+box.x (edge-as-center)
+        // shifted every box ~w/2 LEFT and would have tuned poses to a lie.
+        const bx = atk.box, ccx = cx + bx.x + bx.w/2, ccy = gy - 46 + bx.y;
+        const x0=Math.max(0,Math.floor(ccx-bx.w/2-1)), y0=Math.max(0,Math.floor(ccy-bx.h/2-1));
+        const x1=Math.min(cv.width,Math.ceil(ccx+bx.w/2+1)), y1=Math.min(cv.height,Math.ceil(ccy+bx.h/2+1));
+        const d = ctx.getImageData(x0,y0,x1-x0,y1-y0).data;
+        for (let p=0;p<d.length;p+=4) if (d[p]<120 && d[p+1]>150 && d[p+2]>200) cyan++;
+      }
+      const exp = activeBox(atk,f);
+      if (exp !== (cyan > 5)) pixFail++;      // thin-stroke AA: >5 not >15
+    }
+    if (pixFail) allPass = false;
+    rows.push({name, limb: limbOk, minDistToBox: worstD, pixelFrameFails: pixFail});
+  });
+  return { pass: allPass, rows };
 };

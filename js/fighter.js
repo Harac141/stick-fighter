@@ -57,9 +57,11 @@ const CFG = {
     plantX: 18,                   // planted foot offset from hip
     leanCoil: -0.10, leanKick: 0.18,
     hipChamber: 40, hipKick: 37, hipSink: 32,
-    thrustX: 44, thrustY: 16,     // full-extension heel: forward / height above feet
-                                  // (44/16 over hip 33 = 47px < 48 leg: NO shin
-                                  // stretch — tuned live via __LABCFG, animlab)
+    thrustX: 44, thrustY: 44,     // full-extension heel: forward / height above feet
+                                  // (heel must sit ON the active hitbox — the
+                                  // numeric gate in keyframes.js __KFAUDIT;
+                                  // 16 left it 20-30px UNDER the box. Leg stays
+                                  // <=48px: 45.6 at peak.)
   },
   // MAX GROUNDED FOOT OFFSET from hip is sqrt(48^2 - 37.5^2) ~ 30px (leg
   // 48 long, hip ~37.5 high) — so duty*stride must stay <= ~56 or the shin
